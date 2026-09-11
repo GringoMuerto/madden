@@ -91,7 +91,7 @@ The weekly sequence is identical every run. Nothing about its order varies by in
 | May not | Enforced by |
 |---|---|
 | Change engine code, parameters, tests, spec, README, week or example files, sheets, `.env` | Sandbox `denyWrite` in `.claude/settings.json`, which blocks Bash and every subprocess it starts |
-| Write any file with Claude's file tools, anywhere | `ask` on `Edit(//**)`: a prompt to Scott in every permission mode, including auto and bypass |
+| Write any file with Claude's file tools, anywhere | `ask` on `Edit(//**)`: a prompt to Scott in every permission mode, including auto and bypass — **no prompt was seen at install check: see Known defect below** |
 | Produce a pick, line, band or driver by any route but the engine, including a hand-made sheet, params, week or lines file | Engine input guard in `run.py`: under Claude Code the engine refuses if any input file is writable by the running process. `--cache` refused under Claude Code |
 | Run in a session where the guardrails did not load | The same guard: without the sandbox `params.yaml` is writable, so the engine refuses. `failIfUnavailable` refuses to start a session whose sandbox cannot |
 | Reach any host but the-odds-api, nflverse on GitHub, open-meteo | Sandbox network allowlist; `strictAllowlist` in Scott's user settings makes an off-list host a denial rather than an auto-mode classifier decision |
@@ -115,6 +115,15 @@ The exact rules live in `.claude/settings.json` and `run.py`; this table says wh
 - `!` shell mode is the way round it: on 2026-09-11 `! git -C ~/dev/madden push origin main` pushed six commits, while the same command from inside the session was refused.
 
 **Shell mode (`!`) carries `CLAUDECODE=1` but not the sandbox, verified 2026-09-11.** `! python -m madden.run` ran with `params.yaml` writable and the engine input guard refused it, naming the file. `!` is Scott's own shell and not a path the operator can take, because the model cannot type `!`. What it means is that a board produced that way would carry none of the guardrails in the may-not table above, and the input guard is the only thing that stops one being produced at all.
+
+**Known defect, found 2026-09-11 at install check step 4: no prompt appeared for a file write outside the repo.** Not fixed; no fix designed.
+- What was run: a `Write` creating a new file outside `~/dev/madden`, then an `Edit` to that same file. Scott saw no prompt for either.
+- The rule names `Edit`. `Write` is a separate tool and may not be covered, which would leave creating a file anywhere, `madden/` included, ungated: the sandbox `denyWrite` stops Bash and every subprocess it starts, not Claude's file tools.
+- That explanation is incomplete on its own, because the `Edit` did not prompt either and `Edit` is the tool the rule names. The cause is not established.
+- Confounds not controlled: the file was in the session's scratchpad directory, which the harness may exempt from prompts, and the permission mode in force was not recorded. A clean test writes and edits a file outside both the repo and the scratchpad, with the mode stated.
+- Until this is settled, the second row of the may-not table and the Costs accepted bullet "Every file write in a session started in `~/dev/madden` asks Scott" are both unproven. The write controls known to hold are the sandbox `denyWrite`, which covers Bash only (step 3), and the engine input guard (steps 7 and 8).
+
+**Install check step 6 is unverified, 2026-09-11.** `/madden` from a session started in the vault has not been run. The engine guard refuses when the sandbox is not loaded, verified in shell mode at step 8, so a refusal is expected on that path too. Expected is not verified.
 
 ---
 
