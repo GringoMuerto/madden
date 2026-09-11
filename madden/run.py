@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 
 from .core import make_pick, tiebreaker
-from .market import fetch_lines, load_offline
+from .market import fetch_lines, load_offline, soonest
 from .sheet import SheetFault, parse_sheet
 
 TRANCHES = {
@@ -121,15 +121,15 @@ def main(argv=None) -> int:
     for g in games:
         if days and g.day not in days:
             continue
-        key = frozenset((g.home, g.away))
-        ml = lines.get(key)
+        ml, pair_warnings = soonest(lines, g.home, g.away)
+        warnings.extend(pair_warnings)
         if ml is None:
             warnings.append(f"no market line for {g.away} at {g.home}")
         age = ml.age_hours() if ml else None
         if age is not None and age > params["odds_api"]["max_line_age_hours"]:
             warnings.append(f"{g.away} at {g.home}: line is {age:.1f}h old")
         picks.append(make_pick(
-            g, ml.home_line if ml else None, params,
+            g, ml.line_for(g.home) if ml else None, params,
             temp_f=temps.get(g.home), retractable_open=g.home in open_roofs,
             blind=f"{g.away}@{g.home}" in blind_games))
 
@@ -161,7 +161,7 @@ def main(argv=None) -> int:
     monday = [p for p in picks if p.game.day == "Monday"]
     if monday:
         g = monday[0].game
-        ml = lines.get(frozenset((g.home, g.away)))
+        ml, _ = soonest(lines, g.home, g.away)
         tb = tiebreaker(ml.total if ml else None, params, wind_mph=winds.get(g.home))
         print(f"\nTIEBREAKER  {g.away} at {g.home} combined score: {tb['guess']}")
         print(f"  {tb['reason']}")
