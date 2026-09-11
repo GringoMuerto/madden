@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,27 @@ TRANCHES = {
 }
 
 
+def load_env(start: Path | None = None) -> None:
+    """Read .env from the project root into os.environ. Existing vars always win.
+
+    The key belongs in .env and nowhere else, so the program reads it rather than
+    asking the operator to export it by hand every run.
+    """
+    here = (start or Path(__file__).resolve().parent.parent)
+    for candidate in (here / ".env", Path.cwd() / ".env"):
+        if not candidate.is_file():
+            continue
+        for raw in candidate.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = val
+        return
+
+
 def load_yaml(path):
     with open(path) as fh:
         return yaml.safe_load(fh)
@@ -44,6 +66,7 @@ def main(argv=None) -> int:
     ap.add_argument("--log", default="logs", help="directory for the run log")
     args = ap.parse_args(argv)
 
+    load_env()
     params = load_yaml(args.params)
     week = load_yaml(args.week) if args.week else {}
     temps = week.get("temperatures", {}) or {}
