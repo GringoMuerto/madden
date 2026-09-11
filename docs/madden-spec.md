@@ -62,25 +62,7 @@ The 50% row returning $96 against a $100 entry is the sanity check. Returns are 
 
 ## What actually carries this system
 
-The drift term is the system. Everything else is a small correction around it.
-
-Measured on the 2025 pool archive, 269 games, against the operator's own frozen lines:
-
-- Always take the favorite, the do-nothing baseline: 51.3%
-- Market-side rule alone: 53.9%
-- Situational matrix alone: 50.9%
-- Market plus matrix: 56.9%
-- Full system with power ratings added: 53.2%
-
-Three conclusions follow, and they constrain future work.
-
-The power rating has not earned its place. Adding it cost 3.7 points. It ships damped and on probation. Do not increase its weight without a measured A/B showing it helps.
-
-The situational matrix is worth about one pick a season. Two rules survived an era holdout out of thirty-odd tested. Do not expand it without the same holdout discipline.
-
-The injury valuation was designed and cancelled on 2026-09-10. Injuries reach the picks through the market line: the sheet is frozen Tuesday, the market is not, and when a starter is ruled out the books move while the sheet does not. The drift term already prices that. A separate injury number would double count it. Injury data is used only to flag which games have an unresolved starter before submitting, with no points attached.
-
-A future session reading this spec should not rebuild any of the three above. The evidence against them is recorded here because it exists nowhere else.
+The drift term carries the system. The power rating is not built. If it is ever built, it ships damped, and its weight is not to be increased without a measured A/B. The situational matrix is worth roughly one pick a season, two rules survived a holdout out of thirty tested, and it is not to be expanded without the same discipline. The injury valuation was designed and cancelled on 2026-09-10 because injuries reach the picks through the market line and a separate injury number would double count it; injury data flags unresolved starters only, with no points attached.
 
 ---
 
@@ -317,6 +299,8 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 The scoreboard is nearly free: every pick resolves within days against unambiguous truth.
 
 **Baselines, graded weekly.** The primary one is **take every favorite**, because it is literally the do-nothing alternative under the revert rule. Across four archived seasons it ran 45.4%, 53.1%, 56.7%, 51.1% — combined 51.5% over 976 games, a z of 0.94, which is nothing. Also track every home team (51.0% combined) and **the market side relative to the sheet**, which is Madden's primary input stripped of all computation. If he cannot beat that third one, the model layer is decoration.
+
+**2025 yardstick, for grading a season, not guidance to act on** (pool lines joined to nflverse, 269 games; single season, see open item 6): always take the favorite 51.3%; market-side rule alone 53.9%; situational matrix alone 50.9%; market plus matrix 56.9%. Adding a power rating was tested once and made results worse; the test is not reproducible from this repo and the figure is withheld rather than recorded.
 
 **Track by tranche, not only in aggregate.** Thursday games carry ~2 days of drift; Sunday games ~5 plus inactives. If Madden performs materially better on Sunday games, that is direct evidence the drift thesis is what works. If the tranches perform identically, the thesis is weaker than claimed and Scott should know by midseason.
 
