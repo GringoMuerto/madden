@@ -290,7 +290,13 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 
 **No cap on handbacks (Scott's decision, overruling a recommended cap of three).** He hands back as many games as he lacks the perspective to pick, each with an explanation and a lean. **Tradeoff recorded:** the trigger gets a defined threshold rather than being left to the model's sense of its own uncertainty, and the weekly handback count is logged. If it averages high, the threshold is miscalibrated and the threshold is what gets fixed.
 
-**Requiring a lean on every handback is Scott's design improvement**, not the author's. It means Madden always emits a complete submittable sheet, so ignoring him costs nothing and the revert-to-favorite rule never fires.
+**Requiring a lean on every handback is Scott's design improvement**, not the author's. It means Madden always emits a complete submittable sheet, so ignoring him costs nothing and the revert-to-favorite rule never fires — **not true as built: see Known defect below**.
+
+**Known defect, found 2026-09-11: the sheet is not always complete, and the revert-to-favorite rule does fire.** Not fixed; no fix designed.
+- A handback from a structural break carries a lean, as designed. A game with no market line does not: `make_pick` withholds the side rather than supply a number from anywhere else, which is what *Never fabricate a missing number* under State requires.
+- The two rules contradict each other and the build follows the second. Which one gives way is not decided here.
+- Measured on the week 1 board: 2 of 16 games had no line, so 2 games reverted to the favorite. Both had already been played, which is a second reason no line existed.
+- Until 2026-09-11 the engine printed those games under a handbacks heading that promised a lean for every game beneath it. They now print under `NO PICK`, which names the consequence. The heading no longer claims a lean for a game that has none.
 
 **Generic early-season thinness is not a gate.** It affects every game equally and belongs in the regression weight. Otherwise Madden hands back the whole sheet every September and the mechanism is dead by October.
 
