@@ -3,8 +3,10 @@
 Weekly ATS picks for Scott's office pick'em pool. Every game on the sheet, one point each,
 no confidence weighting.
 
-**The source of truth is the spec**, at `Knowledge/AI Systems/Agent Specs/madden.md` in the
-vault (also synced to Google Drive as `madden.md`). This repo implements it. Where the code
+**The spec is the source of truth.** It is authored in the vault, at `Knowledge/AI Systems/
+Agent Specs/madden.md`. `docs/madden-spec.md` here is the **read copy**, kept byte-identical,
+because a path into the vault is unfollowable from a session started in this project. An edit
+goes to both, identically, in the same commit. This repo implements the spec: where the code
 and the spec disagree, the spec wins and the code is wrong.
 
 **Nothing here is edited from memory.** Every parameter in `params.yaml` is tagged MEASURED

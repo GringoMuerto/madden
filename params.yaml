@@ -1,13 +1,16 @@
 # Madden tuning parameters.
 #
-# SOURCE OF TRUTH: Knowledge/AI Systems/Agent Specs/madden.md (status: approved, revised 2026-09-10).
+# SOURCE OF TRUTH: the vault's Knowledge/AI Systems/Agent Specs/madden.md (status: approved,
+# revised 2026-09-11), read in this repo as docs/madden-spec.md and kept byte-identical.
 # Every value below is tagged MEASURED (with its evidence) or GUESS (a starting value).
 #
 # RULE: a GUESS moves only when the scoreboard moves it, in a dated commit tied to a
 # performance shift. Never after a bad week. Never by argument.
 # RULE: nothing in this file is edited from memory. Re-read the spec first.
 
-spec_version: "2026-09-10"
+# Stamped into every run log. Moves when the spec's own revised: date moves, so a log says
+# which spec actually ran.
+spec_version: "2026-09-11"
 
 sheets:
   # Where the operator's weekly xlsx lives. Relative paths resolve against the project
@@ -91,8 +94,9 @@ venues:
 
 # No injury parameters, deliberately. Injuries reach the picks through the market line;
 # a second injury number would double count what the market already priced, and the spec
-# says a status finding can never flip a pick. The run prints a quarterback exposure
-# section instead: names only, no points, no effect on any pick or band. An invented
+# says a status finding can never flip a pick. The run prints three display-only sections
+# instead -- quarterback exposure, starter health, and injured quarterbacks by depth-chart
+# rank: names and counts only, no points, no effect on any pick or band. An invented
 # severity table (out 1.0, doubtful 0.75, questionable 0.4) lived here and was deleted
 # 2026-09-10.
 
