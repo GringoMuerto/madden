@@ -1,6 +1,6 @@
 """Run a week.
 
-    python -m madden.run --tranche sunday --week examples/week1-2026.yaml
+    python -m madden.run --tranche sunday
 
 The sheet is found in MADDEN_SHEETS_DIR; --sheet overrides it.
 Degrade and warn on a data fault, never stop. Halt only on a sheet fault.
@@ -22,6 +22,7 @@ from .core import make_pick, tiebreaker
 from .injuries import fetch_all, game_confidence, summarise
 from .market import fetch_lines, load_offline, soonest
 from .sheet import SheetFault, parse_sheet
+from .weather import forecast_many
 
 TRANCHES = {
     "thursday": ("Wednesday", "Thursday"),
@@ -32,11 +33,7 @@ TRANCHES = {
 
 
 def load_env(start: Path | None = None) -> None:
-    """Read .env from the project root into os.environ. Existing vars always win.
-
-    The key belongs in .env and nowhere else, so the program reads it rather than
-    asking the operator to export it by hand every run.
-    """
+    """Read .env from the project root into os.environ. Existing vars always win."""
     here = (start or Path(__file__).resolve().parent.parent)
     for candidate in (here / ".env", Path.cwd() / ".env"):
         if not candidate.is_file():
@@ -53,11 +50,7 @@ def load_env(start: Path | None = None) -> None:
 
 
 def newest_sheet(params, root: Path) -> Path:
-    """Find the most recent xlsx in the configured sheets directory.
-
-    MADDEN_SHEETS_DIR in .env wins, because where someone keeps their own files is a
-    property of their machine and does not belong in a tracked config file.
-    """
+    """Find the most recent xlsx in the configured sheets directory."""
     raw = os.environ.get("MADDEN_SHEETS_DIR") or (
         params.get("sheets") or {}).get("directory", "sheets")
     folder = Path(raw).expanduser()
@@ -84,20 +77,22 @@ def main(argv=None) -> int:
     ap.add_argument("--sheet", help="the operator's xlsx; defaults to the newest "
                                     "file in MADDEN_SHEETS_DIR")
     ap.add_argument("--params", default="params.yaml")
-    ap.add_argument("--week", help="week file: temperatures, neutral sites, blind flags")
+    ap.add_argument("--week", help="week file: neutral sites, blind flags, overrides")
     ap.add_argument("--tranche", default="all", choices=sorted(TRANCHES))
     ap.add_argument("--offline-lines", help="hand-entered lines instead of the API")
     ap.add_argument("--expect", type=int, help="expected game count; mismatch is a hard stop")
     ap.add_argument("--log", default="logs", help="directory for the run log")
-    ap.add_argument("--no-injuries", action="store_true",
-                    help="skip the injury fetch (it is on by default)")
+    ap.add_argument("--no-injuries", action="store_true", help="skip the injury fetch")
+    ap.add_argument("--no-weather", action="store_true", help="skip the forecast fetch")
+    ap.add_argument("--fresh", action="store_true",
+                    help="ignore the disk cache and refetch everything")
     args = ap.parse_args(argv)
 
     load_env()
     params = load_yaml(args.params)
     week = load_yaml(args.week) if args.week else {}
-    temps = week.get("temperatures", {}) or {}
-    winds = week.get("wind_mph", {}) or {}
+    temps = dict(week.get("temperatures", {}) or {})
+    winds = dict(week.get("wind_mph", {}) or {})
     neutral = [tuple(p.split("@")) for p in (week.get("neutral_sites") or [])]
     blind_games = set(week.get("blind") or [])
     open_roofs = set(week.get("retractable_open") or [])
@@ -120,22 +115,46 @@ def main(argv=None) -> int:
         lines = {}
 
     days = TRANCHES[args.tranche]
-
-    # Injury designations. On by default: an input that silently does not exist is the
-    # failure this run health block is for. Degrades like every other fetch.
     in_tranche = [g for g in games if not days or g.day in days]
+
+    # Injuries. On by default: an input that silently does not exist is the failure
+    # this run-health block exists for. One league-wide call, cached for an hour.
     reports: dict = {}
     if args.no_injuries:
         warnings.append("injury fetch skipped by --no-injuries: nothing in this run "
                         "reflects availability except through the market line")
     else:
-        teams = [t for g in in_tranche for t in (g.home, g.away)]
+        print("fetching injury designations...", flush=True)
         try:
-            reports = fetch_all(teams)
+            reports = fetch_all([t for g in in_tranche for t in (g.home, g.away)],
+                                use_cache=not args.fresh)
             warnings.extend(summarise(reports))
         except Exception as exc:                  # noqa: BLE001
             warnings.append(f"INJURY FETCH FAILED ({exc}): nothing in this run reflects "
                             f"availability except through the market line")
+
+    # Weather, for outdoor games with no temperature already supplied. The week file
+    # always wins: a value someone entered deliberately beats a forecast.
+    if args.no_weather:
+        warnings.append("forecast skipped by --no-weather: temperature rules cannot fire")
+    else:
+        need = []
+        for g in in_tranche:
+            if g.home in temps or getattr(g, "neutral", False):
+                continue
+            ml, _ = soonest(lines, g.home, g.away)
+            kickoff = ml.starts_at() if ml else None
+            if kickoff is not None:
+                need.append((g.home, kickoff))
+        if need:
+            print(f"fetching forecasts for {len(need)} stadiums...", flush=True)
+            got_t, got_w, w_warn = forecast_many(need)
+            for k, v in got_t.items():
+                temps.setdefault(k, v)
+            for k, v in got_w.items():
+                if v is not None:
+                    winds.setdefault(k, v)
+            warnings.extend(w_warn)
 
     now = datetime.now(timezone.utc)
     max_days = params["odds_api"]["max_kickoff_days"]
@@ -148,8 +167,6 @@ def main(argv=None) -> int:
         warnings.extend(pair_warnings)
         start = ml.starts_at() if ml else None
         if start is not None and start > now + timedelta(days=max_days):
-            # The feed drops a game once it kicks off, so a divisional pair can be left
-            # with only its rematch. That line looks real and is not this week's.
             warnings.append(
                 f"{g.away} at {g.home}: the only meeting in the feed kicks off "
                 f"{ml.commence_time}, more than {max_days} days out. That is not this "
@@ -162,8 +179,8 @@ def main(argv=None) -> int:
             warnings.append(f"{g.away} at {g.home}: line is {age:.1f}h old")
         market_lines[(g.home, g.away)] = ml
 
-        # A status finding lowers confidence in this game's own number. Under the spec it
-        # can never flip a pick, so it is reported and carried, not applied to the edge.
+        # A status finding lowers confidence in this game's number. Under the spec it can
+        # never flip a pick, so it is reported and carried, never applied to the edge.
         penalty, reasons = game_confidence(reports, g.home, g.away) if reports else (0.0, [])
         force_blind = penalty >= params.get("injuries", {}).get("blind_threshold", 0.9)
 
@@ -226,6 +243,7 @@ def main(argv=None) -> int:
         "deviations": len(deviations),
         "injuries_fetched": sorted(t for t, r in reports.items() if r.fetched),
         "injuries_failed": sorted(t for t, r in reports.items() if not r.fetched),
+        "temperatures_used": temps,
         "picks": [{
             "game": f"{p.game.away}@{p.game.home}", "day": p.game.day,
             "sheet_line": p.sheet_home_line, "market_line": p.market_home_line,
