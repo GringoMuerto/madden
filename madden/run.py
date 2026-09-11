@@ -19,6 +19,7 @@ from pathlib import Path
 import yaml
 
 from .core import make_pick, tiebreaker
+from .injuries import fetch_all, game_confidence, summarise
 from .market import fetch_lines, load_offline, soonest
 from .sheet import SheetFault, parse_sheet
 
@@ -88,6 +89,8 @@ def main(argv=None) -> int:
     ap.add_argument("--offline-lines", help="hand-entered lines instead of the API")
     ap.add_argument("--expect", type=int, help="expected game count; mismatch is a hard stop")
     ap.add_argument("--log", default="logs", help="directory for the run log")
+    ap.add_argument("--no-injuries", action="store_true",
+                    help="skip the injury fetch (it is on by default)")
     args = ap.parse_args(argv)
 
     load_env()
@@ -117,6 +120,23 @@ def main(argv=None) -> int:
         lines = {}
 
     days = TRANCHES[args.tranche]
+
+    # Injury designations. On by default: an input that silently does not exist is the
+    # failure this run health block is for. Degrades like every other fetch.
+    in_tranche = [g for g in games if not days or g.day in days]
+    reports: dict = {}
+    if args.no_injuries:
+        warnings.append("injury fetch skipped by --no-injuries: nothing in this run "
+                        "reflects availability except through the market line")
+    else:
+        teams = [t for g in in_tranche for t in (g.home, g.away)]
+        try:
+            reports = fetch_all(teams)
+            warnings.extend(summarise(reports))
+        except Exception as exc:                  # noqa: BLE001
+            warnings.append(f"INJURY FETCH FAILED ({exc}): nothing in this run reflects "
+                            f"availability except through the market line")
+
     now = datetime.now(timezone.utc)
     max_days = params["odds_api"]["max_kickoff_days"]
     market_lines: dict = {}
@@ -141,10 +161,19 @@ def main(argv=None) -> int:
         if age is not None and age > params["odds_api"]["max_line_age_hours"]:
             warnings.append(f"{g.away} at {g.home}: line is {age:.1f}h old")
         market_lines[(g.home, g.away)] = ml
-        picks.append(make_pick(
+
+        # A status finding lowers confidence in this game's own number. Under the spec it
+        # can never flip a pick, so it is reported and carried, not applied to the edge.
+        penalty, reasons = game_confidence(reports, g.home, g.away) if reports else (0.0, [])
+        force_blind = penalty >= params.get("injuries", {}).get("blind_threshold", 0.9)
+
+        pick = make_pick(
             g, ml.line_for(g.home) if ml else None, params,
             temp_f=temps.get(g.home), retractable_open=g.home in open_roofs,
-            blind=f"{g.away}@{g.home}" in blind_games))
+            blind=(f"{g.away}@{g.home}" in blind_games) or force_blind)
+        for r in reasons:
+            pick.warnings.append(r)
+        picks.append(pick)
 
     submittable = [p for p in picks if p.side]
     handbacks = [p for p in picks if p.blind or p.side is None]
@@ -195,6 +224,8 @@ def main(argv=None) -> int:
         "run": stamp, "tranche": args.tranche, "sheet": str(sheet_path),
         "spec_version": params["spec_version"],
         "deviations": len(deviations),
+        "injuries_fetched": sorted(t for t, r in reports.items() if r.fetched),
+        "injuries_failed": sorted(t for t, r in reports.items() if not r.fetched),
         "picks": [{
             "game": f"{p.game.away}@{p.game.home}", "day": p.game.day,
             "sheet_line": p.sheet_home_line, "market_line": p.market_home_line,
