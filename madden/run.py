@@ -21,7 +21,7 @@ import yaml
 
 from .core import make_pick, tiebreaker
 from . import injuries
-from .market import fetch_lines, load_offline, soonest
+from .market import fetch_lines, fetch_scores, load_offline, soonest
 from .sheet import SheetFault, parse_sheet
 from .weather import forecast_many
 
@@ -151,6 +151,58 @@ def guard_inputs(paths, cache: bool) -> str | None:
     return None
 
 
+NO_LINE_PLAYED = "already played"
+NO_LINE_FETCH_FAILED = "fetch failed"
+NO_LINE_ABSENT = "not in the feed"
+
+
+def no_line_reason(game, scores, fetch_failed: bool) -> tuple[str, str]:
+    """Why this game has no market line: (label for the board, sentence for run health).
+
+    The spreads feed drops a game once it has been played, so a finished game and a game
+    the feed never listed both arrive as no line. Reporting both as "line missing" hid
+    two finished games in the week 1 board. The scores endpoint is what separates them.
+    """
+    if fetch_failed:
+        return NO_LINE_FETCH_FAILED, (
+            "the line fetch failed, so this game was never priced this run. Whether it "
+            "has already been played is not known here.")
+    final = scores.get(frozenset((game.home, game.away)))
+    if final is not None and final.completed:
+        return NO_LINE_PLAYED, (
+            f"already played ({final.text}). The feed drops a finished game, so there was "
+            f"no line to pick against.")
+    return NO_LINE_ABSENT, (
+        f"the feed lists no meeting for {game.away} at {game.home}, and the score check "
+        f"does not show it finished. No line, and the reason is not known.")
+
+
+def handback_lines(picks) -> list[str]:
+    """The handback sections: games that carry a lean, then games with no pick at all.
+
+    A game with no market line has no lean. make_pick withholds the side rather than
+    fabricating one, so the line cannot sit under a header promising a lean; the header
+    used to promise one for every handback. Games with no pick get their own section
+    naming the consequence, because an unpicked game is a favorite pick by default.
+    """
+    leaned = [p for p in picks if p.blind and p.side]
+    no_pick = [p for p in picks if p.side is None]
+    out: list[str] = []
+    if leaned:
+        out.append("HANDBACKS (each carries a lean, so these are still submittable)")
+        for p in leaned:
+            g = p.game
+            out.append(f"  {g.away} at {g.home}: lean {p.side}; "
+                       f"{'; '.join(p.warnings) or 'flagged'}")
+    if no_pick:
+        out.append("NO PICK (no lean either: nothing to submit, so under the pool's rule "
+                   "these revert to the favorite)")
+        for p in no_pick:
+            g = p.game
+            out.append(f"  {g.away} at {g.home}: {'; '.join(p.warnings) or 'flagged'}")
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Madden: weekly ATS picks for the office pool")
     ap.add_argument("--sheet", help="the operator's xlsx; defaults to the highest "
@@ -206,11 +258,13 @@ def main(argv=None) -> int:
         print(f"SHEET FAULT, halting: {exc}", file=sys.stderr)
         return 2
 
+    line_fetch_failed = False
     try:
         lines = load_offline(args.offline_lines) if args.offline_lines else fetch_lines(params)
     except Exception as exc:                      # degrade and warn, never stop
         warnings.append(f"line fetch failed ({exc}); every game is running without a market line")
         lines = {}
+        line_fetch_failed = True
 
     days = TRANCHES[args.tranche]
     in_tranche = [g for g in games if not days or g.day in days]
@@ -283,8 +337,25 @@ def main(argv=None) -> int:
             blind=f"{g.away}@{g.home}" in blind_games)
         picks.append(pick)
 
+    # Say why each unpriced game has no line. Costs 2 credits, so it is asked once, and
+    # only when something came back unpriced.
+    no_line_labels: dict = {}
+    unpriced = [p for p in picks if p.side is None]
+    scores: dict = {}
+    if unpriced and not line_fetch_failed:
+        print(f"checking whether {len(unpriced)} unpriced game(s) have been played...",
+              flush=True)
+        try:
+            scores = fetch_scores(params)
+        except Exception as exc:                  # degrade and warn, never stop
+            warnings.append(f"score check failed ({exc}); a game already played cannot be "
+                            f"told apart from one the feed never listed")
+    for p in unpriced:
+        label, sentence = no_line_reason(p.game, scores, fetch_failed=line_fetch_failed)
+        no_line_labels[(p.game.home, p.game.away)] = label
+        p.warnings.append(sentence)
+
     submittable = [p for p in picks if p.side]
-    handbacks = [p for p in picks if p.blind or p.side is None]
     deviations = [p for p in submittable if p.deviates_from_favorite]
 
     print(f"\nMADDEN  tranche={args.tranche}  games={len(picks)}  "
@@ -296,7 +367,8 @@ def main(argv=None) -> int:
         name = f"{g.away} at {g.home}"
         if p.side is None:
             print(f"{name:<26}{g.sheet_home_line:>7.1f}{'--':>7}{'--':>7}{'--':>7}{'--':>7}  "
-                  f"{'--':<5}{'blind':<11}line missing")
+                  f"{'--':<5}{'blind':<11}"
+                  f"{no_line_labels.get((g.home, g.away), 'line missing')}")
             continue
         print(f"{name:<26}{g.sheet_home_line:>7.1f}{p.market_home_line:>7.1f}"
               f"{p.adjustment_total:>7.1f}{p.madden_number:>7.1f}{p.edge:>7.1f}  "
@@ -333,11 +405,11 @@ def main(argv=None) -> int:
             # rebuild, which can be a report behind the league's.
             print(f"  no unresolved quarterback in this build: {', '.join(clear)}")
 
-    if handbacks:
-        print("\nHANDBACKS (each still carries a lean, so the sheet is always submittable)")
-        for p in handbacks:
-            g = p.game
-            print(f"  {g.away} at {g.home}: {'; '.join(p.warnings) or 'flagged'}")
+    sections = handback_lines(picks)
+    if sections:
+        print()
+        for line in sections:
+            print(line)
 
     monday = [p for p in picks if p.game.day == "Monday"]
     if monday:

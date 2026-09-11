@@ -426,3 +426,70 @@ def test_a_broken_forecast_degrades_rather_than_stopping_the_run(exc, monkeypatc
     temps, winds, warnings = weather.forecast_many([("PIT", kickoff)])
     assert temps == {} and winds == {}
     assert any("no forecast for PIT" in w for w in warnings)
+
+
+def _handback(side, warnings=("flagged",)):
+    """A blind pick with a lean (side set) or with no pick at all (side None)."""
+    from madden.core import Pick
+    g = game("KC", "DEN", 2.5, home="KC") if side else game("BAL", "IND", 3.5, home="IND")
+    return Pick(game=g, market_home_line=-2.5 if side else None,
+                sheet_home_line=g.sheet_home_line, adjustments=[], madden_number=None,
+                edge=None, side=side, band="blind", warnings=list(warnings), blind=True)
+
+
+def test_handbacks_claim_a_lean_only_for_games_that_have_one():
+    from madden.run import handback_lines
+    out = handback_lines([_handback("KC"), _handback(None)])
+    lean_header = next(i for i, l in enumerate(out) if l.startswith("HANDBACKS"))
+    no_pick_header = next(i for i, l in enumerate(out) if l.startswith("NO PICK"))
+    leaned = next(i for i, l in enumerate(out) if "lean KC" in l)
+    unpicked = next(i for i, l in enumerate(out) if "BAL at IND" in l)
+    assert lean_header < leaned < no_pick_header < unpicked
+    assert "lean" not in out[unpicked]
+
+
+def test_no_lean_is_claimed_when_no_game_carries_one():
+    from madden.run import handback_lines
+    out = handback_lines([_handback(None)])
+    assert out and not any("carries a lean" in line for line in out)
+    assert any("revert to the favorite" in line for line in out)
+
+
+# The spreads feed drops a game once it has been played, so a finished game arrives
+# looking exactly like one the feed never listed: no line. The scores endpoint separates
+# them, and a failed fetch must never be reported as either.
+
+SCORES_PAYLOAD = [
+    {"home_team": "Seattle Seahawks", "away_team": "New England Patriots",
+     "commence_time": "2026-09-10T00:23:22Z", "completed": True,
+     "scores": [{"name": "Seattle Seahawks", "score": "13"},
+                {"name": "New England Patriots", "score": "10"}]},
+    {"home_team": "Kansas City Chiefs", "away_team": "Denver Broncos",
+     "commence_time": "2026-09-13T17:00:00Z", "completed": False, "scores": None},
+]
+
+
+def test_scores_payload_keys_on_the_pair_and_keeps_the_final():
+    from madden.market import parse_scores_payload
+    scores = parse_scores_payload(SCORES_PAYLOAD)
+    played = scores[frozenset(("SEA", "NE"))]
+    assert played.completed and "Seattle Seahawks 13" in played.text
+    assert not scores[frozenset(("KC", "DEN"))].completed
+
+
+def test_a_played_game_is_distinguishable_from_a_failed_fetch():
+    from madden.market import parse_scores_payload
+    from madden.run import no_line_reason
+    scores = parse_scores_payload(SCORES_PAYLOAD)
+    played = game("SEA", "NE", 3.5, home="SEA")
+    never_listed = game("BAL", "IND", 3.5, home="IND")
+
+    played_label, played_text = no_line_reason(played, scores, fetch_failed=False)
+    absent_label, _ = no_line_reason(never_listed, scores, fetch_failed=False)
+    failed_label, failed_text = no_line_reason(played, scores, fetch_failed=True)
+
+    assert played_label == "already played" and "Seattle Seahawks 13" in played_text
+    assert absent_label == "not in the feed"
+    # Same game, but with the fetch broken nothing may be claimed about it.
+    assert failed_label == "fetch failed" and "line fetch failed" in failed_text
+    assert len({played_label, absent_label, failed_label}) == 3

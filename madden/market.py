@@ -82,14 +82,19 @@ def _consensus(values: list[float], how: str) -> float | None:
     return round(statistics.median(values), 2)
 
 
-def fetch_lines(params, api_key: str | None = None, timeout: int = 20) -> dict:
-    """Fetch current spreads and totals. Raises on transport failure; the caller degrades."""
-    cfg = params["odds_api"]
-    api_key = api_key or os.environ.get("ODDS_API_KEY")
-    if not api_key:
+def _api_key(api_key: str | None) -> str:
+    key = api_key or os.environ.get("ODDS_API_KEY")
+    if not key:
         raise RuntimeError(
             "ODDS_API_KEY is not set. Put it in .env (which .gitignore excludes). "
             "The key never goes in the vault, a repo, or a conversation.")
+    return key
+
+
+def fetch_lines(params, api_key: str | None = None, timeout: int = 20) -> dict:
+    """Fetch current spreads and totals. Raises on transport failure; the caller degrades."""
+    cfg = params["odds_api"]
+    api_key = _api_key(api_key)
 
     query = urllib.parse.urlencode({
         "apiKey": api_key, "regions": cfg["regions"], "markets": cfg["markets"],
@@ -231,3 +236,50 @@ def load_offline(path: str) -> dict:
             books=int(val.get("books", 0)), last_update=val.get("last_update"),
         )]
     return out
+
+
+@dataclass
+class FinalScore:
+    completed: bool
+    commence_time: str | None
+    text: str                    # "Seattle Seahawks 13, New England Patriots 10"
+
+
+def parse_scores_payload(payload) -> dict:
+    """Final scores keyed by the pair of teams, the same key parse_odds_payload uses."""
+    out: dict = {}
+    for event in payload:
+        try:
+            home = abbr(event["home_team"])
+            away = abbr(event["away_team"])
+        except (KeyError, ValueError):
+            continue
+        scores = event.get("scores") or []
+        out[frozenset((home, away))] = FinalScore(
+            completed=bool(event.get("completed")),
+            commence_time=event.get("commence_time"),
+            text=", ".join(f"{s.get('name')} {s.get('score')}" for s in scores
+                           if s.get("name") is not None))
+    return out
+
+
+def fetch_scores(params, api_key: str | None = None, timeout: int = 20,
+                 days_from: int = 3) -> dict:
+    """Recently completed games, to tell a game already played from one the feed never had.
+
+    The spreads feed drops a game once it is over, so a played game and a game the feed
+    never listed arrive identically: no line. This endpoint is the difference.
+
+    Costs 2 credits. Without days_from it costs 1 but returns no completed games at all
+    (measured 2026-09-11), which is the only thing being asked for here, so the caller
+    asks only when some game came back with no line.
+    """
+    cfg = params["odds_api"]
+    query = urllib.parse.urlencode({"apiKey": _api_key(api_key), "daysFrom": days_from})
+    url = f"{cfg['base_url']}/sports/{cfg['sport']}/scores?{query}"
+    with urlopen(url, timeout=timeout) as resp:
+        remaining = resp.headers.get("x-requests-remaining")
+        payload = json.load(resp)
+    if remaining is not None:
+        print(f"[market] odds api credits remaining: {remaining}")
+    return parse_scores_payload(payload)
