@@ -112,6 +112,9 @@ The exact rules live in `.claude/settings.json` and `run.py`; this table says wh
 - HTTPS: reaches GitHub, but git gets no credentials inside the sandbox (`could not read Username for 'https://github.com'`).
 - Consequence: the operator's compare-`main`-to-`origin/main` step cannot run as installed, so the standing rule that `main` equals `origin/main` before a run is not checked from inside a session. `git push` fails the same way.
 - The sandbox also write-protects `.git/config`, so the remote cannot be changed from inside a session.
+- `!` shell mode is the way round it: on 2026-09-11 `! git -C ~/dev/madden push origin main` pushed six commits, while the same command from inside the session was refused.
+
+**Shell mode (`!`) carries `CLAUDECODE=1` but not the sandbox, verified 2026-09-11.** `! python -m madden.run` ran with `params.yaml` writable and the engine input guard refused it, naming the file. `!` is Scott's own shell and not a path the operator can take, because the model cannot type `!`. What it means is that a board produced that way would carry none of the guardrails in the may-not table above, and the input guard is the only thing that stops one being produced at all.
 
 ---
 
