@@ -2,7 +2,7 @@
 
     python -m madden.run --tranche sunday --week examples/week1-2026.yaml
 
-The sheet is found in the configured sheets directory; --sheet overrides it.
+The sheet is found in MADDEN_SHEETS_DIR; --sheet overrides it.
 Degrade and warn on a data fault, never stop. Halt only on a sheet fault.
 Madden never submits, never contacts, never publishes.
 """
@@ -54,16 +54,18 @@ def load_env(start: Path | None = None) -> None:
 def newest_sheet(params, root: Path) -> Path:
     """Find the most recent xlsx in the configured sheets directory.
 
-    The weekly file should live in one stable place, not wherever a browser dropped it.
+    MADDEN_SHEETS_DIR in .env wins, because where someone keeps their own files is a
+    property of their machine and does not belong in a tracked config file.
     """
-    raw = (params.get("sheets") or {}).get("directory", "sheets")
+    raw = os.environ.get("MADDEN_SHEETS_DIR") or (
+        params.get("sheets") or {}).get("directory", "sheets")
     folder = Path(raw).expanduser()
     if not folder.is_absolute():
         folder = root / folder
     if not folder.is_dir():
         raise SheetFault(
-            f"sheets directory {folder} does not exist. Create it, or point "
-            f"sheets.directory in params.yaml at your Drive-synced folder.")
+            f"sheets directory {folder} does not exist. Set MADDEN_SHEETS_DIR in .env "
+            f"to wherever you keep the weekly sheets.")
     found = [f for f in folder.glob("*.xlsx") if not f.name.startswith("~$")]
     if not found:
         raise SheetFault(
@@ -79,7 +81,7 @@ def load_yaml(path):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Madden: weekly ATS picks for the office pool")
     ap.add_argument("--sheet", help="the operator's xlsx; defaults to the newest "
-                                    "file in the sheets directory from params.yaml")
+                                    "file in MADDEN_SHEETS_DIR")
     ap.add_argument("--params", default="params.yaml")
     ap.add_argument("--week", help="week file: temperatures, neutral sites, blind flags")
     ap.add_argument("--tranche", default="all", choices=sorted(TRANCHES))
