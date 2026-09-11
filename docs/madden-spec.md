@@ -2,7 +2,7 @@
 type: agent-spec
 status: approved
 created: 2026-09-10
-revised: 2026-09-10
+revised: 2026-09-11
 playbook_version: 2026-08-06
 supersedes: the first madden.md draft written earlier on 2026-09-10, now trashed
 ---
@@ -68,13 +68,44 @@ The drift term carries the system. The power rating is not built. If it is ever 
 
 ## Architecture decision
 
-**Rung 2: a deterministic script with two model calls inside it.** Not a single call, not an agent with tools, not a team.
+**As built, 2026-09-11: rung 2, a deterministic script with no model calls inside it, operated by one Claude Code skill.** The design further down places two model calls inside the script, Call A (status adjudication) and Call B (writer). Neither is built. Drivers are generated in code from the inputs, and structural breaks are declared by hand in the week file. The only model in the loop is the operator skill, and it sits outside the script.
 
 The weekly sequence is identical every run. Nothing about its order varies by input, so the playbook's rule applies: a known repeatable sequence belongs in code rather than in a model re-deciding the flow.
 
-**Team rejected.** None of the five justifications holds — steps are dependent, the week fits one context, components would contend over shared state, the graph is fixed. The independent-coverage argument is satisfied instead by lane isolation between the two model calls (see Connections).
+**Team rejected.** None of the five justifications holds: steps are dependent, the week fits one context, components would contend over shared state, the graph is fixed.
 
-**Single agent with tools rejected.** It would let a model re-decide a fixed sequence weekly, adding cost and variance for nothing.
+**Agent-driven sequence rejected.** The operator is a single agent with tools, but it does not decide the sequence and it produces no number. It runs the script and reports.
+
+**The tradeoff this shape carries.** The operator sees everything, sheet, lines, picks and injury news, and holds a shell. That is what Call A's lane boundary was designed to prevent, so the independence property claimed for Call A (status signal and market signal never meet in one model) does not exist in the as-built system. The shape is acceptable only because every pick, band and driver comes out of code, and that is enforced in the harness, not in prose.
+
+**Call A and Call B remain designed, not built.** Their specification under Workers stands. Building either is a change to this section.
+
+### Operator skill
+
+**Mandate:** run the engine and report exactly what it produced. When Scott digs into a game, fetch; never reason.
+**Lives at** `plugins/scott-agents/skills/madden/SKILL.md` in `GringoMuerto/claude-skills`.
+**Invoked** as `/madden` from a Claude Code session started in `~/dev/madden`. Project settings load only from the session's starting directory, so a session started anywhere else has no guardrails, and the engine refuses to run in it.
+
+**May:** fetch and compare `main` to `origin/main`; run `python -m madden.run` with the documented flags; read any file in the repo and the run log; fetch from the three allowlisted sources in a follow-up; report the engine's output.
+
+| May not | Enforced by |
+|---|---|
+| Change engine code, parameters, tests, spec, README, week or example files, sheets, `.env` | Sandbox `denyWrite` in `.claude/settings.json`, which blocks Bash and every subprocess it starts |
+| Write any file with Claude's file tools, anywhere | `ask` on `Edit(//**)`: a prompt to Scott in every permission mode, including auto and bypass |
+| Produce a pick, line, band or driver by any route but the engine, including a hand-made sheet, params, week or lines file | Engine input guard in `run.py`: under Claude Code the engine refuses if any input file is writable by the running process. `--cache` refused under Claude Code |
+| Run in a session where the guardrails did not load | The same guard: without the sandbox `params.yaml` is writable, so the engine refuses. `failIfUnavailable` refuses to start a session whose sandbox cannot |
+| Reach any host but the-odds-api, nflverse on GitHub, open-meteo | Sandbox network allowlist; `strictAllowlist` in Scott's user settings makes an off-list host a denial rather than an auto-mode classifier decision |
+| Use WebSearch or WebFetch | `deny` rules |
+| Retry a blocked command outside the sandbox | `allowUnsandboxedCommands: false` |
+
+The exact rules live in `.claude/settings.json` and `run.py`; this table says what each is for and does not restate them.
+
+**Left in prose deliberately.** Presenting the engine's output unrewritten: the text of a reply cannot be permission-gated. Mitigation: every report cites the log path the engine printed, so any figure can be checked against the file. Also prose: voice, the Sunday timing note.
+
+**Costs accepted.**
+- Every file write in a session started in `~/dev/madden` asks Scott, maintenance included, and including Claude's own memory and plan writes there. That is the gate on engine changes.
+- `git pull` cannot update engine files from inside the sandbox. Under the sole-writer rule origin should never be ahead; when it is, Scott runs `! git -C ~/dev/madden pull` himself.
+- The repo root stays writable so `git fetch` works. A file created there could shadow a module the engine imports. That takes deliberate sabotage rather than drift, and closing it would break fetch.
 
 ---
 
@@ -180,6 +211,8 @@ Wind is the only weather variable that reliably moves totals (20+ mph ≈ 2.7 fe
 
 ## Workers
 
+*Status: designed, not built. See Architecture decision.*
+
 ### Call A — status adjudicator and model-validity check
 
 **Mandate.** Convert fetched injury reports, designations, inactives and personnel news into (a) a starter-status verdict per team, (b) tier-2 absence flags, (c) a model-validity verdict per game.
@@ -246,6 +279,8 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 | Degraded run | Fetch failure or stale data | Which input failed, which games affected, the pick with and without | Notify | Picks stand |
 | Unresolved status | Sunday run, meaningful player still questionable on a later-window game | Which player, which way the line moved, the pick either way | Notify | Pick stands |
 | Silence | No run by the tranche deadline | Alert | Notify | Games revert to favorite |
+| Engine change | Any file write in a session started in `~/dev/madden` | The file and the change | Approve or reject | The write does not happen |
+| Guardrails not loaded | Engine run where an input is writable, or `--cache` under Claude Code | The refusal, naming the input | Halt | No picks |
 
 **No cap on handbacks (Scott's decision, overruling a recommended cap of three).** He hands back as many games as he lacks the perspective to pick, each with an explanation and a lean. **Tradeoff recorded:** the trigger gets a defined threshold rather than being left to the model's sense of its own uncertainty, and the weekly handback count is logged. If it averages high, the threshold is miscalibrated and the threshold is what gets fixed.
 
@@ -280,6 +315,7 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 - No halting spend ceiling. Two model calls against sixteen games is not a cost story.
 - Degrade and warn, never stop, on data faults. Halt only on sheet fault.
 - Madden never submits, never contacts, never publishes.
+- Operator enforcement: see Architecture decision → Operator skill.
 
 ---
 

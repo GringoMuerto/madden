@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from madden.core import band_for, crosses_key_number, make_pick, situational_adjustments
 from madden.sheet import Game, SheetFault, parse_sheet
+from madden.run import guard_inputs
 
 PARAMS = yaml.safe_load((Path(__file__).resolve().parents[1] / "params.yaml").read_text())
 
@@ -339,3 +340,30 @@ def test_forecast_is_not_written_to_disk_without_the_cache_flag(tmp_path, monkey
     kickoff = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
     assert weather.forecast("PIT", kickoff) == (80.4, 5.0)
     assert not (tmp_path / ".cache").exists()
+
+
+def test_guard_refuses_a_writable_input_under_claude_code(tmp_path, monkeypatch):
+    f = tmp_path / "params.yaml"
+    f.write_text("x")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert guard_inputs([f], cache=False) is not None
+
+
+def test_guard_passes_a_read_only_input(tmp_path, monkeypatch):
+    f = tmp_path / "params.yaml"
+    f.write_text("x")
+    f.chmod(0o444)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert guard_inputs([f], cache=False) is None
+
+
+def test_guard_is_off_outside_claude_code(tmp_path, monkeypatch):
+    f = tmp_path / "params.yaml"
+    f.write_text("x")
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    assert guard_inputs([f], cache=False) is None
+
+
+def test_cache_is_refused_under_claude_code(monkeypatch):
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert guard_inputs([], cache=True) is not None

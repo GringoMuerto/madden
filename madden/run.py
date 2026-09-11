@@ -127,6 +127,30 @@ def load_yaml(path):
         return yaml.safe_load(fh)
 
 
+def guard_inputs(paths, cache: bool) -> str | None:
+    """Under Claude Code, refuse any input this process could have written.
+
+    The sandbox makes the engine, parameters, week files and sheets read-only to
+    anything Claude runs. A writable input means the session started outside
+    ~/dev/madden and the sandbox never loaded, or the file was made in this session.
+    Either way the board would not be the engine's own.
+    """
+    if os.environ.get("CLAUDECODE") != "1":
+        return None
+    if cache:
+        return "--cache reads files this session can write; refused under Claude Code"
+    for p in filter(None, paths):
+        try:
+            fd = os.open(p, os.O_WRONLY | os.O_APPEND)   # no O_CREAT: creates nothing
+        except OSError:
+            continue
+        os.close(fd)
+        return (f"{p} is writable by this process: the guardrails are not loaded or the "
+                f"file was made in this session. Start Claude Code in ~/dev/madden, or run "
+                f"the engine from a terminal outside Claude Code.")
+    return None
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Madden: weekly ATS picks for the office pool")
     ap.add_argument("--sheet", help="the operator's xlsx; defaults to the highest "
@@ -171,6 +195,11 @@ def main(argv=None) -> int:
         wk = week_of(sheet_path)
         print(f"sheet: {sheet_path.name}" + (f"  (week {wk})" if wk is not None else ""))
         print(f"  {sheet_path}")
+        problem = guard_inputs(
+            [args.params, sheet_path, args.week, args.offline_lines], cache=args.cache)
+        if problem:
+            print(f"GUARDRAIL, halting: {problem}", file=sys.stderr)
+            return 3
         games = parse_sheet(str(sheet_path), expected_games=args.expect,
                             neutral_sites=neutral)
     except SheetFault as exc:
