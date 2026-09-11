@@ -30,6 +30,8 @@ situational:
     threshold: 7.0
   divisional:
     points: -0.8          # MEASURED n=2,608, survives a temperature control
+                          # The divisional rule applies flat to both meetings, and its
+                          # mechanism is unknown.
   global_home_baseline:
     points: -0.3          # MEASURED n=6,712, home teams cover 49.0%. Applies to EVERY
                           # non-neutral game, including ones no other rule touches.
