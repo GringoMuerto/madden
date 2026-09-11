@@ -87,6 +87,25 @@ venues:
   # Retractable roofs are treated as indoors unless a week override says the roof was open.
   retractable_default_open: false
 
+injuries:
+  # NOT IN THE SPEC. The spec gives blindness to Call A (structural breaks), which is not
+  # built. Until it is, the engine flags a game blind from ESPN designations using the
+  # values below. Every one is a GUESS with no measurement behind it. A blind flag never
+  # changes a pick, only its band. It also cannot tell a starter from a backup: any QB
+  # listed out trips it. Settled by: Call A replacing this, or the scoreboard grading
+  # flagged games against unflagged ones.
+  # Not the same number as market_regression.blindness_weight, which is a regression weight.
+  severity:                 # GUESS. How much one designation lowers confidence, 0 to 1.
+    out: 1.0
+    doubtful: 0.75
+    questionable: 0.4
+    probable: 0.1
+  tier2_positions: [DE, OLB, EDGE, CB, LT, RT, OT, C, G, OG, WR]  # GUESS
+  tier2_min_status: doubtful  # GUESS. A non-QB counts only at this severity or worse.
+  tier2_per_player: 0.08    # GUESS
+  tier2_cap: 0.25           # GUESS
+  blind_threshold: 0.9      # GUESS. A game whose worst team penalty reaches this is blind.
+
 guardrails:
   call_a_fetch_budget: 12   # GUESS
   call_b_tool_budget: 0

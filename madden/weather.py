@@ -35,7 +35,7 @@ STADIUMS = {
     "DEN": (39.744, -105.020), "DET": (42.340, -83.046), "GB": (44.501, -88.062),
     "HOU": (29.685, -95.411), "IND": (39.760, -86.164), "JAX": (30.324, -81.637),
     "KC": (39.049, -94.484), "LV": (36.091, -115.183), "LAC": (33.953, -118.339),
-    "LA": (33.953, -118.339), "MIA": (25.958, -80.239), "MIN": (44.974, -93.258),
+    "LA": (33.953, -118.339), "LAR": (33.953, -118.339), "MIA": (25.958, -80.239), "MIN": (44.974, -93.258),
     "NE": (42.091, -71.264), "NO": (29.951, -90.081), "NYG": (40.814, -74.074),
     "NYJ": (40.814, -74.074), "PHI": (39.901, -75.168), "PIT": (40.447, -80.016),
     "SF": (37.713, -122.386), "SEA": (47.595, -122.332), "TB": (27.976, -82.503),
@@ -56,7 +56,7 @@ def _fetch(lat: float, lon: float, timeout: int):
         return json.load(resp)
 
 
-def forecast(team: str, kickoff, timeout: int = 12, use_cache: bool = True):
+def forecast(team: str, kickoff, timeout: int = 12, use_cache: bool = False):
     """(temp_f, wind_mph) at the home team's stadium for that kickoff, or (None, None).
 
     `kickoff` is a timezone-aware datetime, or None for the next few days' average --
@@ -77,10 +77,11 @@ def forecast(team: str, kickoff, timeout: int = 12, use_cache: bool = True):
     if payload is None:
         try:
             payload = _fetch(coords[0], coords[1], timeout)
-            CACHE.mkdir(exist_ok=True)
-            p.write_text(json.dumps(payload))
         except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError):
             return None, None
+        if use_cache:          # the spec: perishable data is never written to disk
+            CACHE.mkdir(exist_ok=True)
+            p.write_text(json.dumps(payload))
 
     try:
         hourly = payload["hourly"]
@@ -91,11 +92,11 @@ def forecast(team: str, kickoff, timeout: int = 12, use_cache: bool = True):
         return None, None
 
 
-def forecast_many(pairs, timeout: int = 12) -> tuple:
+def forecast_many(pairs, timeout: int = 12, use_cache: bool = False) -> tuple:
     """pairs: [(home_team, kickoff_datetime)]. Returns (temps, winds, warnings)."""
     temps, winds, warnings = {}, {}, []
     for team, kickoff in pairs:
-        t, w = forecast(team, kickoff, timeout=timeout)
+        t, w = forecast(team, kickoff, timeout=timeout, use_cache=use_cache)
         if t is None:
             warnings.append(f"no forecast for {team}; the temperature rule cannot fire")
             continue

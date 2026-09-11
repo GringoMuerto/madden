@@ -1,20 +1,29 @@
-"""Official injury designations, in one request per run.
+"""Injury designations from ESPN, per team, every page, in parallel, under a deadline.
 
-The first version of this made one index call per team plus two more for every
-designation on it -- several hundred sequential requests with no timeout and no
-progress output. It was not hung, it was crawling, and it looked identical to hung.
-That is what this rewrite fixes.
+History of this module, because both earlier versions failed silently:
 
-ESPN publishes a league-wide injuries endpoint that returns every team inline. One
-call. The per-team path is kept only as a fallback, capped, with a hard deadline.
+  * The first resolved every entry one request at a time. It took five minutes and
+    printed nothing, which is indistinguishable from hung. It also read only the first
+    page of each team's list (25 of 54-61 entries).
+  * The second switched to ESPN's league-wide endpoint, which returns 403 Access Denied.
+    Its fallback read `status` off index entries that are bare $ref pointers, found
+    nothing, marked every team fetched, and dropped the error. Run health then reported
+    "no quarterback or high-impact designations" for a team with two QBs listed.
 
-No key, no betting sites, no search results. Undocumented, so failure degrades: the
-run says what it could not fetch and picks anyway.
+What this version guarantees:
 
-This never infers a designation. If the feed does not say a player is out, he is not
-out -- a model asked whether someone is playing will produce a confident answer from
-training data that looks exactly like a fetched one. And it never flips a pick; under
-the spec a status finding can only lower confidence in a game's number.
+  * A team is either FAILED, with the error that failed it, or it was read completely.
+    Zero readable designations is FAILED, never clean. A missing page, an unreadable
+    entry, an unreadable athlete behind a live designation, or the deadline expiring all
+    make the team FAILED. There is no partial success, because a partial list with the
+    quarterback missing looks exactly like a clean one.
+  * Each player counts once, at his most recent entry. The list is a history, so an old
+    "Out" superseded by a later "Active" must not count.
+  * Nothing is written to disk unless the caller asks for the cache. The spec: perishable
+    data is fetched fresh, never written to disk.
+
+It never infers a designation and it never flips a pick. It never reads a betting site
+or a search result.
 """
 
 from __future__ import annotations
@@ -23,12 +32,10 @@ import json
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-LEAGUE_INJURIES = (
-    "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
-)
 CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl"
 
 ESPN_TEAM_IDS = {
@@ -42,8 +49,15 @@ ESPN_ABBR = {
     "WSH": "WAS", "LAR": "LA", "JAC": "JAX", "OAK": "LV", "SD": "LAC", "STL": "LA",
 }
 
-SEVERITY = {"out": 1.0, "doubtful": 0.75, "questionable": 0.4, "probable": 0.1}
-TIER2 = {"DE", "OLB", "EDGE", "CB", "LT", "RT", "OT", "C", "G", "OG", "WR"}
+# Operational limits, not tuning. A request that fails is retried once.
+WORKERS = 24
+REQUEST_TIMEOUT = 12
+DEADLINE_SECONDS = 90
+RETRIES = 1
+
+# Severity weights, tier-2 positions and the blind threshold live in params.yaml under
+# `injuries`, each tagged GUESS. They are not in the spec. Every function that scores a
+# designation takes that block as `cfg`, so there is no second copy of a number here.
 
 CACHE = Path(".cache")
 CACHE_TTL_SECONDS = 3600
@@ -54,12 +68,12 @@ class Designation:
     team: str
     player: str
     position: str
-    status: str
+    status: str          # lowercased, verbatim from the feed
     detail: str = ""
+    date: str = ""       # the entry's own timestamp, as ESPN writes it
 
-    @property
-    def severity(self) -> float:
-        return SEVERITY.get(self.status, 0.0)
+    def severity(self, cfg) -> float:
+        return float(cfg["severity"].get(self.status, 0.0))
 
     @property
     def is_qb(self) -> bool:
@@ -73,20 +87,21 @@ class TeamReport:
     fetched: bool = False
     error: str = ""
 
-    @property
-    def quarterbacks(self) -> list:
-        return [d for d in self.designations if d.is_qb and d.severity > 0]
+    def quarterbacks(self, cfg) -> list:
+        return [d for d in self.designations if d.is_qb and d.severity(cfg) > 0]
 
-    @property
-    def tier2(self) -> list:
+    def tier2(self, cfg) -> list:
+        floor = cfg["severity"][cfg["tier2_min_status"]]
+        positions = {p.upper() for p in cfg["tier2_positions"]}
         return [d for d in self.designations if not d.is_qb
-                and d.position.upper() in TIER2 and d.severity >= SEVERITY["doubtful"]]
+                and d.position.upper() in positions and d.severity(cfg) >= floor]
 
-    def confidence_penalty(self) -> float:
+    def confidence_penalty(self, cfg) -> float:
         if not self.fetched:
             return 0.0
-        qb = max((d.severity for d in self.quarterbacks), default=0.0)
-        return min(1.0, qb + min(0.25, 0.08 * len(self.tier2)))
+        qb = max((d.severity(cfg) for d in self.quarterbacks(cfg)), default=0.0)
+        others = min(cfg["tier2_cap"], cfg["tier2_per_player"] * len(self.tier2(cfg)))
+        return min(1.0, qb + others)
 
 
 def _norm(abbr: str) -> str:
@@ -94,138 +109,238 @@ def _norm(abbr: str) -> str:
     return ESPN_ABBR.get(a, a)
 
 
-def _get(url: str, timeout: int):
-    req = urllib.request.Request(url, headers={"User-Agent": "madden/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.load(resp)
-
-
-def _cached(name: str, ttl: int = CACHE_TTL_SECONDS):
-    p = CACHE / name
-    if p.is_file() and (time.time() - p.stat().st_mtime) < ttl:
+def _http_get(url: str):
+    url = url.replace("http://", "https://")
+    last = None
+    for _ in range(RETRIES + 1):
         try:
-            return json.loads(p.read_text())
-        except ValueError:
-            return None
-    return None
+            req = urllib.request.Request(url, headers={"User-Agent": "madden/1.0"})
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                return json.load(resp)
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError) as exc:
+            last = exc
+    raise RuntimeError(f"{type(last).__name__}: {last}") from last
 
 
-def _store(name: str, payload) -> None:
-    CACHE.mkdir(exist_ok=True)
-    (CACHE / name).write_text(json.dumps(payload))
+def _athlete_key(ref: str) -> str:
+    return (ref or "").split("?")[0]
 
 
-def _parse_league(payload) -> dict:
-    """The league endpoint nests: injuries -> [ {team, injuries: [...]} ].
+class _Run:
+    """One fetch across many teams: a shared pool, a shared deadline, per-team errors."""
 
-    Shapes vary between ESPN's surfaces, so this reads defensively and returns
-    whatever it can rather than raising on an unexpected key.
-    """
-    out: dict = {}
-    groups = payload.get("injuries") if isinstance(payload, dict) else None
-    if not isinstance(groups, list):
-        return out
-    for group in groups:
-        team = _norm((group.get("abbreviation")
-                      or (group.get("team") or {}).get("abbreviation") or ""))
-        if team not in ESPN_TEAM_IDS:
-            continue
-        report = out.setdefault(team, TeamReport(team=team, fetched=True))
-        for item in (group.get("injuries") or []):
-            status = str(item.get("status") or "").strip().lower()
-            if not status:
-                continue
-            ath = item.get("athlete") or {}
-            report.designations.append(Designation(
-                team=team,
-                player=ath.get("displayName") or ath.get("fullName") or "(unnamed)",
-                position=((ath.get("position") or {}).get("abbreviation") or ""),
-                status=status,
-                detail=str((item.get("details") or {}).get("type")
-                           or item.get("shortComment") or ""),
-            ))
-    return out
+    def __init__(self, get, deadline_seconds):
+        self.get = get
+        self.ends = time.monotonic() + deadline_seconds
+        self.deadline_seconds = deadline_seconds
+        self.pool = ThreadPoolExecutor(max_workers=WORKERS)
+
+    def map(self, jobs):
+        """jobs: {key: url}. Returns ({key: payload}, {key: error string})."""
+        futures = {self.pool.submit(self.get, url): key for key, url in jobs.items()}
+        done, pending = wait(futures, timeout=max(0.0, self.ends - time.monotonic()))
+        results, errors = {}, {}
+        for f in done:
+            key = futures[f]
+            try:
+                results[key] = f.result()
+            except Exception as exc:                                  # noqa: BLE001
+                errors[key] = str(exc)
+        for f in pending:
+            f.cancel()
+            errors[futures[f]] = f"deadline of {self.deadline_seconds}s reached"
+        return results, errors
+
+    def close(self):
+        self.pool.shutdown(wait=False, cancel_futures=True)
 
 
-def fetch_all(teams, timeout: int = 15, deadline_seconds: int = 45,
-              use_cache: bool = True) -> dict:
-    """One call for the whole league. Falls back to per-team, capped by a deadline."""
+def _fail(report: TeamReport, message: str) -> None:
+    if not report.error:
+        report.error = message
+    report.fetched = False
+    report.designations = []
+
+
+def fetch_all(teams, use_cache: bool = False, get=None,
+              deadline_seconds: int = DEADLINE_SECONDS) -> dict:
+    """Every team in `teams`, read completely or marked FAILED with its reason."""
     wanted = sorted({_norm(t) for t in teams})
     reports = {t: TeamReport(team=t) for t in wanted}
 
-    payload = _cached("injuries.json") if use_cache else None
-    if payload is None:
-        try:
-            payload = _get(LEAGUE_INJURIES, timeout)
-            _store("injuries.json", payload)
-        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError) as exc:
-            payload = None
-            reports[wanted[0]].error = str(exc)
+    cached = _load_cache() if use_cache else {}
+    for t in wanted:
+        if t in cached:
+            reports[t] = cached[t]
+    todo = [t for t in wanted if not reports[t].fetched]
+    for t in todo:
+        if t not in ESPN_TEAM_IDS:
+            _fail(reports[t], f"no ESPN team id for {t}")
+    todo = [t for t in todo if t in ESPN_TEAM_IDS]
+    if not todo:
+        return reports
 
-    if payload is not None:
-        parsed = _parse_league(payload)
-        if parsed:
-            for t in wanted:
-                if t in parsed:
-                    reports[t] = parsed[t]
-            missing = [t for t in wanted if not reports[t].fetched]
-            if not missing:
-                return reports
+    run = _Run(get or _http_get, deadline_seconds)
+    try:
+        _fetch(run, todo, reports)
+    finally:
+        run.close()
 
-    # Fallback: per team, with a hard deadline so this can never hang a run again.
-    started = time.time()
-    for t in [t for t in wanted if not reports[t].fetched]:
-        if time.time() - started > deadline_seconds:
-            reports[t].error = "deadline reached before this team was fetched"
-            continue
-        try:
-            index = _get(f"{CORE}/teams/{ESPN_TEAM_IDS[t]}/injuries", timeout)
-        except Exception as exc:                                    # noqa: BLE001
-            reports[t].error = str(exc)
-            continue
-        reports[t].fetched = True
-        # Deliberately does NOT resolve the per-athlete $ref pointers. That is what made
-        # the first version take minutes. Status without a name is still usable.
-        for item in (index.get("items") or [])[:25]:
-            status = str(item.get("status") or "").strip().lower()
-            if status:
-                reports[t].designations.append(Designation(
-                    team=t, player="(name not resolved)", position="", status=status))
+    if use_cache:
+        _store_cache({t: r for t, r in reports.items() if r.fetched})
     return reports
 
 
-def summarise(reports: dict) -> list:
-    """Run-health lines. Silence about a missing input is worse than the input."""
-    out = []
-    failed = sorted(t for t, r in reports.items() if not r.fetched)
-    if failed and len(failed) == len(reports):
-        return ["INJURY FETCH FAILED for every team: nothing in this run reflects "
-                "availability except through the market line"]
-    if failed:
-        out.append(f"injury report unavailable for {', '.join(failed)}; those teams "
-                   f"ran with no availability data")
-    for team, r in sorted(reports.items()):
-        for d in r.quarterbacks:
-            out.append(f"{team}: QB {d.player} listed {d.status}"
-                       + (f" ({d.detail})" if d.detail else ""))
-        if r.tier2:
-            names = ", ".join(f"{d.player} {d.position} {d.status}" for d in r.tier2[:4])
-            out.append(f"{team}: {names}")
-    if not out:
-        out.append("injury reports fetched: no quarterback or high-impact designations")
+def _fetch(run: _Run, todo: list, reports: dict) -> None:
+    index_url = lambda t, page: f"{CORE}/teams/{ESPN_TEAM_IDS[t]}/injuries?page={page}"
+
+    # 1. First page of every team's list, which also says how many pages there are.
+    first, errs = run.map({t: index_url(t, 1) for t in todo})
+    for t, e in errs.items():
+        _fail(reports[t], f"injury list page 1: {e}")
+    live = [t for t in todo if t in first]
+
+    # 2. Every remaining page.
+    jobs = {}
+    for t in live:
+        for page in range(2, int(first[t].get("pageCount") or 1) + 1):
+            jobs[(t, page)] = index_url(t, page)
+    pages, errs = run.map(jobs)
+    for (t, page), e in errs.items():
+        _fail(reports[t], f"injury list page {page}: {e}")
+
+    refs: dict = {}
+    for t in live:
+        if reports[t].error:
+            continue
+        items = list(first[t].get("items") or [])
+        for (pt, _), payload in sorted(pages.items()):
+            if pt == t:
+                items.extend(payload.get("items") or [])
+        expected = first[t].get("count")
+        if expected is not None and len(items) != int(expected):
+            _fail(reports[t], f"ESPN reports {expected} entries, {len(items)} were listed")
+            continue
+        if not items:
+            _fail(reports[t], "ESPN returned no injury entries, so there is nothing to read")
+            continue
+        refs[t] = [i.get("$ref", "") for i in items]
+
+    # 3. Every entry. The index holds only pointers; status and date live here.
+    jobs = {(t, n): ref for t, rs in refs.items() for n, ref in enumerate(rs) if ref}
+    entries, errs = run.map(jobs)
+    unreadable: dict = {}
+    for (t, _), e in errs.items():
+        unreadable.setdefault(t, []).append(e)
+    for t, es in unreadable.items():
+        _fail(reports[t], f"{len(es)} of {len(refs[t])} entries unreadable ({es[0]})")
+
+    # 4. Latest entry per player. The list is a history.
+    latest: dict = {}
+    for (t, _), e in entries.items():
+        if reports[t].error:
+            continue
+        status = str(e.get("status") or "").strip().lower()
+        who = _athlete_key((e.get("athlete") or {}).get("$ref", ""))
+        if not status or not who:
+            continue
+        prev = latest.get((t, who))
+        if prev is None or str(e.get("date") or "") > str(prev.get("date") or ""):
+            latest[(t, who)] = e
+
+    for t in refs:
+        if not reports[t].error and not any(k[0] == t for k in latest):
+            _fail(reports[t], f"none of {len(refs[t])} entries carried a readable status")
+
+    # 5. Name and position, only for players whose latest status is not "active". An
+    # unreadable athlete behind a live designation could be the quarterback, so it fails
+    # the team rather than being dropped.
+    need = {k: (e.get("athlete") or {}).get("$ref", "") for k, e in latest.items()
+            if not reports[k[0]].error
+            and str(e.get("status") or "").strip().lower() != "active"}
+    athletes, errs = run.map(need)
+    for (t, _), e in errs.items():
+        _fail(reports[t], f"athlete behind a live designation unreadable ({e})")
+
+    for (t, who), e in sorted(latest.items()):
+        r = reports[t]
+        if r.error:
+            continue
+        a = athletes.get((t, who), {})
+        r.designations.append(Designation(
+            team=t,
+            player=a.get("displayName") or a.get("fullName") or "",
+            position=((a.get("position") or {}).get("abbreviation") or ""),
+            status=str(e.get("status") or "").strip().lower(),
+            detail=str((e.get("details") or {}).get("type") or ""),
+            date=str(e.get("date") or ""),
+        ))
+    for t in refs:
+        if not reports[t].error:
+            reports[t].fetched = True
+
+
+def _load_cache() -> dict:
+    p = CACHE / "injuries.json"
+    if not p.is_file() or (time.time() - p.stat().st_mtime) >= CACHE_TTL_SECONDS:
+        return {}
+    try:
+        raw = json.loads(p.read_text())
+    except ValueError:
+        return {}
+    out = {}
+    for t, r in raw.items():
+        out[t] = TeamReport(team=t, fetched=True,
+                            designations=[Designation(**d) for d in r["designations"]])
     return out
 
 
-def game_confidence(reports: dict, home: str, away: str) -> tuple:
+def _store_cache(reports: dict) -> None:
+    CACHE.mkdir(exist_ok=True)
+    (CACHE / "injuries.json").write_text(json.dumps(
+        {t: {"designations": [asdict(d) for d in r.designations]}
+         for t, r in reports.items()}))
+
+
+def summarise(reports: dict, cfg) -> list:
+    """Run-health lines. A failure is named with its reason; it is never reported clean."""
+    out = []
+    failed = {t: r.error or "no reason recorded" for t, r in reports.items() if not r.fetched}
+    by_reason: dict = {}
+    for t, why in sorted(failed.items()):
+        by_reason.setdefault(why, []).append(t)
+    for why, teams in by_reason.items():
+        who = "every team" if len(teams) == len(reports) else ", ".join(teams)
+        out.append(f"INJURY FETCH FAILED for {who}: {why}. No availability data for "
+                   f"{'them' if len(teams) > 1 else 'that team'} except through the market line")
+    for team, r in sorted(reports.items()):
+        if not r.fetched:
+            continue
+        for d in r.quarterbacks(cfg):
+            out.append(f"{team}: QB {d.player} listed {d.status}"
+                       + (f" ({d.detail})" if d.detail else "") + f" [{d.date}]")
+        tier2 = r.tier2(cfg)
+        if tier2:
+            names = ", ".join(f"{d.player} {d.position} {d.status}" for d in tier2[:4])
+            out.append(f"{team}: {names}")
+    ok = [t for t, r in reports.items() if r.fetched]
+    if ok and not any(r.quarterbacks(cfg) or r.tier2(cfg)
+                      for r in reports.values() if r.fetched):
+        out.append(f"injury reports read in full for {len(ok)} teams: no quarterback or "
+                   f"high-impact designations")
+    return out
+
+
+def game_confidence(reports: dict, home: str, away: str, cfg) -> tuple:
     reasons, worst = [], 0.0
     for team in (_norm(home), _norm(away)):
         r = reports.get(team)
         if r is None or not r.fetched:
             continue
-        p = r.confidence_penalty()
+        p = r.confidence_penalty(cfg)
         if p <= 0:
             continue
         worst = max(worst, p)
-        for d in r.quarterbacks:
+        for d in r.quarterbacks(cfg):
             reasons.append(f"{team} QB {d.player} {d.status}")
     return worst, reasons

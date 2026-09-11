@@ -6,6 +6,7 @@ so a negative adjustment favours the visitor. A previous reconstruction had this
 """
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -173,24 +174,137 @@ def _event(home, away, home_spread, kickoff):
     }
 
 
+# Market tests run at a fixed moment, never the wall clock: soonest() drops a game once it
+# has kicked off, so a test pinned to real kickoffs breaks the day those games are played.
+WEEK1_TUESDAY = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+
 def test_divisional_rematch_does_not_overwrite_this_weeks_line():
     # Week 1 at the Giants, NYG -2.5. The week 17 rematch in Dallas, DAL -4.5, comes back
     # in the same payload. The run must price week 1, oriented to the sheet's home team.
+    # A rematch months away is a different game, not an ambiguity, so it must NOT warn:
+    # warning on the normal case trains the reader to skip run health (commit 0fcb959).
     from madden.market import parse_odds_payload, soonest
     payload = [
         _event("Dallas Cowboys", "New York Giants", -4.5, "2026-12-27T18:00:00Z"),
         _event("New York Giants", "Dallas Cowboys", -2.5, "2026-09-13T17:00:00Z"),
     ]
     lines = parse_odds_payload(payload, PARAMS)
-    ml, warnings = soonest(lines, "NYG", "DAL")
+    ml, warnings = soonest(lines, "NYG", "DAL", now=WEEK1_TUESDAY)
     assert ml.commence_time.startswith("2026-09-13")
     assert ml.line_for("NYG") == 2.5
+    assert not any("meetings" in w for w in warnings)
+
+
+def test_two_meetings_inside_the_window_do_warn():
+    from madden.market import parse_odds_payload, soonest
+    payload = [
+        _event("New York Giants", "Dallas Cowboys", -2.5, "2026-09-13T17:00:00Z"),
+        _event("Dallas Cowboys", "New York Giants", -4.5, "2026-09-17T00:15:00Z"),
+    ]
+    ml, warnings = soonest(parse_odds_payload(payload, PARAMS), "NYG", "DAL",
+                           now=WEEK1_TUESDAY)
+    assert ml.commence_time.startswith("2026-09-13")
     assert any("2 meetings" in w for w in warnings)
+
+
+def test_a_game_already_kicked_off_has_no_line():
+    from madden.market import parse_odds_payload, soonest
+    payload = [_event("New York Giants", "Dallas Cowboys", -2.5, "2026-09-13T17:00:00Z")]
+    after = datetime(2026, 9, 13, 18, 0, tzinfo=timezone.utc)
+    ml, warnings = soonest(parse_odds_payload(payload, PARAMS), "NYG", "DAL", now=after)
+    assert ml is None and any("already kicked off" in w for w in warnings)
 
 
 def test_line_is_reoriented_when_the_feed_disagrees_about_home():
     from madden.market import parse_odds_payload, soonest
     payload = [_event("San Francisco 49ers", "Los Angeles Rams", -1.5, "2026-09-11T10:35:00Z")]
-    ml, warnings = soonest(parse_odds_payload(payload, PARAMS), "LAR", "SF")
+    ml, warnings = soonest(parse_odds_payload(payload, PARAMS), "LAR", "SF",
+                           now=WEEK1_TUESDAY)
     assert ml.line_for("LAR") == -1.5
     assert any("re-oriented" in w for w in warnings)
+
+
+# Injury fetch, against a canned ESPN. Every earlier version failed silently, so these
+# pin the one property that matters: a team is read in full or reported FAILED.
+
+def _espn(pages, entries, athletes, broken=()):
+    """A fake GET. pages: {page_no: [entry ids]} for team 1 (ATL)."""
+    from madden.injuries import CORE
+    count = sum(len(v) for v in pages.values())
+    table = {}
+    for n, ids in pages.items():
+        table[f"{CORE}/teams/1/injuries?page={n}"] = {
+            "count": count, "pageCount": len(pages), "items": [{"$ref": f"e/{i}"} for i in ids]}
+    for i, (status, date, who) in entries.items():
+        table[f"e/{i}"] = {"status": status, "date": date, "athlete": {"$ref": f"a/{who}"}}
+    for who, (name, pos) in athletes.items():
+        table[f"a/{who}"] = {"displayName": name, "position": {"abbreviation": pos}}
+
+    def get(url):
+        if url in broken or url not in table:
+            raise RuntimeError(f"HTTPError: 403 Forbidden for {url}")
+        return table[url]
+    return get
+
+
+def test_injuries_read_every_page_and_keep_each_players_latest_entry():
+    from madden.injuries import fetch_all
+    get = _espn(
+        pages={1: [1, 2], 2: [3]},
+        entries={1: ("Questionable", "2026-09-10T20:00Z", 10),
+                 2: ("Out", "2026-08-04T15:00Z", 11),
+                 3: ("Active", "2026-09-01T15:00Z", 11)},      # supersedes the old Out
+        athletes={10: ("Tua Tagovailoa", "QB"), 11: ("DeAngelo Malone", "LB")})
+    r = fetch_all(["ATL"], get=get)["ATL"]
+    assert r.fetched and not r.error
+    assert [(d.player, d.status) for d in r.quarterbacks(PARAMS["injuries"])] == [
+        ("Tua Tagovailoa", "questionable")]
+    assert len(r.designations) == 2                       # one per player, not per entry
+    assert "out" not in {d.status for d in r.designations}
+
+
+def test_injury_page_failure_is_failed_not_clean():
+    from madden.injuries import CORE, fetch_all, summarise
+    get = _espn(pages={1: [1]}, entries={1: ("Out", "2026-09-07T15:00Z", 10)},
+                athletes={10: ("Michael Penix Jr.", "QB")},
+                broken={f"{CORE}/teams/1/injuries?page=1"})
+    reports = fetch_all(["ATL"], get=get)
+    assert not reports["ATL"].fetched and "403" in reports["ATL"].error
+    health = summarise(reports, PARAMS["injuries"])
+    assert any(h.startswith("INJURY FETCH FAILED") and "403" in h for h in health)
+    assert not any("no quarterback" in h for h in health)
+
+
+def test_unreadable_entries_fail_the_team():
+    # The exact failure of the previous version: pointers listed, contents never read.
+    from madden.injuries import fetch_all
+    get = _espn(pages={1: [1, 2]},
+                entries={1: ("Out", "2026-09-07T15:00Z", 10),
+                         2: ("Questionable", "2026-09-10T20:00Z", 11)},
+                athletes={10: ("A", "QB"), 11: ("B", "QB")}, broken={"e/2"})
+    r = fetch_all(["ATL"], get=get)["ATL"]
+    assert not r.fetched and "1 of 2 entries unreadable" in r.error
+
+
+def test_zero_injury_entries_is_failed():
+    from madden.injuries import fetch_all
+    r = fetch_all(["ATL"], get=_espn(pages={1: []}, entries={}, athletes={}))["ATL"]
+    assert not r.fetched and "no injury entries" in r.error
+
+
+def test_unreadable_athlete_behind_a_live_designation_fails_the_team():
+    from madden.injuries import fetch_all
+    get = _espn(pages={1: [1]}, entries={1: ("Out", "2026-09-07T15:00Z", 10)},
+                athletes={}, broken={"a/10"})
+    r = fetch_all(["ATL"], get=get)["ATL"]
+    assert not r.fetched and "athlete" in r.error
+
+
+def test_nothing_is_written_to_disk_without_the_cache_flag(tmp_path, monkeypatch):
+    from madden import injuries
+    monkeypatch.setattr(injuries, "CACHE", tmp_path / ".cache")
+    get = _espn(pages={1: [1]}, entries={1: ("Questionable", "2026-09-10T20:00Z", 10)},
+                athletes={10: ("Tua Tagovailoa", "QB")})
+    injuries.fetch_all(["ATL"], get=get)
+    assert not (tmp_path / ".cache").exists()

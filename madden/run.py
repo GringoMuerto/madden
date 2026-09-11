@@ -141,12 +141,15 @@ def main(argv=None) -> int:
     ap.add_argument("--log", default="logs", help="directory for the run log")
     ap.add_argument("--no-injuries", action="store_true", help="skip the injury fetch")
     ap.add_argument("--no-weather", action="store_true", help="skip the forecast fetch")
-    ap.add_argument("--fresh", action="store_true",
-                    help="ignore the disk cache and refetch everything")
+    ap.add_argument("--cache", action="store_true",
+                    help="debugging only: read and write injuries (1h) and forecasts (6h) "
+                         "on disk. A real run never uses this; the spec says perishable "
+                         "data is fetched fresh and never written to disk")
     args = ap.parse_args(argv)
 
     load_env()
     params = load_yaml(args.params)
+    inj_cfg = params["injuries"]
     week = load_yaml(args.week) if args.week else {}
     temps = dict(week.get("temperatures", {}) or {})
     winds = dict(week.get("wind_mph", {}) or {})
@@ -155,6 +158,9 @@ def main(argv=None) -> int:
     open_roofs = set(week.get("retractable_open") or [])
 
     warnings: list[str] = []
+    if args.cache:
+        warnings.append("CACHE IN USE (--cache): injuries may be up to 1h old and forecasts "
+                        "up to 6h old. Not a submittable run")
     try:
         if args.sheet:
             sheet_path = Path(args.sheet).expanduser()
@@ -181,17 +187,17 @@ def main(argv=None) -> int:
     in_tranche = [g for g in games if not days or g.day in days]
 
     # Injuries. On by default: an input that silently does not exist is the failure
-    # this run-health block exists for. One league-wide call, cached for an hour.
+    # this run-health block exists for. Per team, every page, fetched fresh.
     reports: dict = {}
     if args.no_injuries:
         warnings.append("injury fetch skipped by --no-injuries: nothing in this run "
                         "reflects availability except through the market line")
     else:
-        print("fetching injury designations...", flush=True)
+        teams = sorted({t for g in in_tranche for t in (g.home, g.away)})
+        print(f"fetching injury designations for {len(teams)} teams...", flush=True)
         try:
-            reports = fetch_all([t for g in in_tranche for t in (g.home, g.away)],
-                                use_cache=not args.fresh)
-            warnings.extend(summarise(reports))
+            reports = fetch_all(teams, use_cache=args.cache)
+            warnings.extend(summarise(reports, inj_cfg))
         except Exception as exc:                  # noqa: BLE001
             warnings.append(f"INJURY FETCH FAILED ({exc}): nothing in this run reflects "
                             f"availability except through the market line")
@@ -203,7 +209,7 @@ def main(argv=None) -> int:
     else:
         need = []
         for g in in_tranche:
-            if g.home in temps or getattr(g, "neutral", False):
+            if g.home in temps or g.neutral_site:
                 continue
             ml, _ = soonest(lines, g.home, g.away)
             kickoff = ml.starts_at() if ml else None
@@ -211,7 +217,7 @@ def main(argv=None) -> int:
                 need.append((g.home, kickoff))
         if need:
             print(f"fetching forecasts for {len(need)} stadiums...", flush=True)
-            got_t, got_w, w_warn = forecast_many(need)
+            got_t, got_w, w_warn = forecast_many(need, use_cache=args.cache)
             for k, v in got_t.items():
                 temps.setdefault(k, v)
             for k, v in got_w.items():
@@ -244,8 +250,9 @@ def main(argv=None) -> int:
 
         # A status finding lowers confidence in this game's number. Under the spec it can
         # never flip a pick, so it is reported and carried, never applied to the edge.
-        penalty, reasons = game_confidence(reports, g.home, g.away) if reports else (0.0, [])
-        force_blind = penalty >= params.get("injuries", {}).get("blind_threshold", 0.9)
+        penalty, reasons = (game_confidence(reports, g.home, g.away, inj_cfg)
+                            if reports else (0.0, []))
+        force_blind = penalty >= inj_cfg["blind_threshold"]
 
         pick = make_pick(
             g, ml.line_for(g.home) if ml else None, params,
@@ -273,6 +280,10 @@ def main(argv=None) -> int:
         print(f"{name:<26}{g.sheet_home_line:>7.1f}{p.market_home_line:>7.1f}"
               f"{p.adjustment_total:>7.1f}{p.madden_number:>7.1f}{p.edge:>7.1f}  "
               f"{p.side:<5}{p.band:<11}{p.drivers[0]}")
+        # Every driver, not just the first: a high band on a small edge is a key-number
+        # crossing, and hiding that line makes the band look unexplained.
+        for extra in p.drivers[1:]:
+            print(f"{'':<79}{extra}")
 
     if handbacks:
         print("\nHANDBACKS (each still carries a lean, so the sheet is always submittable)")
@@ -306,7 +317,8 @@ def main(argv=None) -> int:
         "spec_version": params["spec_version"],
         "deviations": len(deviations),
         "injuries_fetched": sorted(t for t, r in reports.items() if r.fetched),
-        "injuries_failed": sorted(t for t, r in reports.items() if not r.fetched),
+        "injuries_failed": {t: r.error for t, r in sorted(reports.items()) if not r.fetched},
+        "cache_used": args.cache,
         "temperatures_used": temps,
         "picks": [{
             "game": f"{p.game.away}@{p.game.home}", "day": p.game.day,
