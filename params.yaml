@@ -9,6 +9,13 @@
 
 spec_version: "2026-09-10"
 
+sheets:
+  # Where the operator's weekly xlsx lives. Relative paths resolve against the project
+  # root. Set this to a Drive-synced folder and the file is simply there every Tuesday:
+  #   directory: "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/OW Pick Em/26-27"
+  # Otherwise drop the download into ./sheets/ and the newest xlsx is used automatically.
+  directory: "sheets"
+
 situational:
   # MEASURED. nflverse 1999-2025. Fitted 1999-2012, tested untouched on 2013-2025.
   # Benchmarked against the 49.0% home base rate, NOT 50%.
