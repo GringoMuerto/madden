@@ -1,7 +1,8 @@
 """Run a week.
 
-    python -m madden.run --sheet "Eustace - NFL2026w1.xlsx" --week week.yaml --tranche sunday
+    python -m madden.run --tranche sunday --week examples/week1-2026.yaml
 
+The sheet is found in the configured sheets directory; --sheet overrides it.
 Degrade and warn on a data fault, never stop. Halt only on a sheet fault.
 Madden never submits, never contacts, never publishes.
 """
@@ -50,6 +51,26 @@ def load_env(start: Path | None = None) -> None:
         return
 
 
+def newest_sheet(params, root: Path) -> Path:
+    """Find the most recent xlsx in the configured sheets directory.
+
+    The weekly file should live in one stable place, not wherever a browser dropped it.
+    """
+    raw = (params.get("sheets") or {}).get("directory", "sheets")
+    folder = Path(raw).expanduser()
+    if not folder.is_absolute():
+        folder = root / folder
+    if not folder.is_dir():
+        raise SheetFault(
+            f"sheets directory {folder} does not exist. Create it, or point "
+            f"sheets.directory in params.yaml at your Drive-synced folder.")
+    found = [f for f in folder.glob("*.xlsx") if not f.name.startswith("~$")]
+    if not found:
+        raise SheetFault(
+            f"no xlsx found in {folder}. Put this week's sheet there, or pass --sheet.")
+    return max(found, key=lambda f: f.stat().st_mtime)
+
+
 def load_yaml(path):
     with open(path) as fh:
         return yaml.safe_load(fh)
@@ -57,7 +78,8 @@ def load_yaml(path):
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Madden: weekly ATS picks for the office pool")
-    ap.add_argument("--sheet", required=True, help="the operator's xlsx")
+    ap.add_argument("--sheet", help="the operator's xlsx; defaults to the newest "
+                                    "file in the sheets directory from params.yaml")
     ap.add_argument("--params", default="params.yaml")
     ap.add_argument("--week", help="week file: temperatures, neutral sites, blind flags")
     ap.add_argument("--tranche", default="all", choices=sorted(TRANCHES))
@@ -76,7 +98,11 @@ def main(argv=None) -> int:
     open_roofs = set(week.get("retractable_open") or [])
 
     try:
-        games = parse_sheet(args.sheet, expected_games=args.expect, neutral_sites=neutral)
+        sheet_path = Path(args.sheet).expanduser() if args.sheet else newest_sheet(
+            params, Path(__file__).resolve().parent.parent)
+        print(f"sheet: {sheet_path}")
+        games = parse_sheet(str(sheet_path), expected_games=args.expect,
+                            neutral_sites=neutral)
     except SheetFault as exc:
         print(f"SHEET FAULT, halting: {exc}", file=sys.stderr)
         return 2
@@ -151,7 +177,7 @@ def main(argv=None) -> int:
     logdir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     record = {
-        "run": stamp, "tranche": args.tranche, "sheet": args.sheet,
+        "run": stamp, "tranche": args.tranche, "sheet": str(sheet_path),
         "spec_version": params["spec_version"],
         "deviations": len(deviations),
         "picks": [{
