@@ -106,3 +106,8 @@ odds_api:
                           # price against a multi-book consensus.
   # Staleness is judged from the data's own last_update timestamps, never a clock heuristic.
   max_line_age_hours: 24  # GUESS, used only to raise a warning
+  # GUESS. A slate runs Wednesday to Monday and the sheet can be priced from Tuesday, so
+  # this week's games kick off within about 7 days. A later kickoff means the feed holds
+  # only a rematch (this week's meeting has already started and dropped out), and that
+  # line is treated as missing rather than used.
+  max_kickoff_days: 8

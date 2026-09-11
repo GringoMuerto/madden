@@ -13,7 +13,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -117,17 +117,30 @@ def main(argv=None) -> int:
         lines = {}
 
     days = TRANCHES[args.tranche]
+    now = datetime.now(timezone.utc)
+    max_days = params["odds_api"]["max_kickoff_days"]
+    market_lines: dict = {}
     picks = []
     for g in games:
         if days and g.day not in days:
             continue
         ml, pair_warnings = soonest(lines, g.home, g.away)
         warnings.extend(pair_warnings)
+        start = ml.starts_at() if ml else None
+        if start is not None and start > now + timedelta(days=max_days):
+            # The feed drops a game once it kicks off, so a divisional pair can be left
+            # with only its rematch. That line looks real and is not this week's.
+            warnings.append(
+                f"{g.away} at {g.home}: the only meeting in the feed kicks off "
+                f"{ml.commence_time}, more than {max_days} days out. That is not this "
+                f"week's game, so the line is treated as missing.")
+            ml = None
         if ml is None:
             warnings.append(f"no market line for {g.away} at {g.home}")
         age = ml.age_hours() if ml else None
         if age is not None and age > params["odds_api"]["max_line_age_hours"]:
             warnings.append(f"{g.away} at {g.home}: line is {age:.1f}h old")
+        market_lines[(g.home, g.away)] = ml
         picks.append(make_pick(
             g, ml.line_for(g.home) if ml else None, params,
             temp_f=temps.get(g.home), retractable_open=g.home in open_roofs,
@@ -161,7 +174,7 @@ def main(argv=None) -> int:
     monday = [p for p in picks if p.game.day == "Monday"]
     if monday:
         g = monday[0].game
-        ml, _ = soonest(lines, g.home, g.away)
+        ml = market_lines.get((g.home, g.away))
         tb = tiebreaker(ml.total if ml else None, params, wind_mph=winds.get(g.home))
         print(f"\nTIEBREAKER  {g.away} at {g.home} combined score: {tb['guess']}")
         print(f"  {tb['reason']}")

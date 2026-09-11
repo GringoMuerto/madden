@@ -162,3 +162,35 @@ def test_neutral_site_declaration_flows_through_the_parser(tmp_path):
     _write_sheet(p, [("Thursday", "LOS ANGELES RAMS", 3.5, "San Francisco 49ers")])
     games = parse_sheet(str(p), neutral_sites=[("LAR", "SF")])
     assert games[0].neutral_site
+
+
+def _event(home, away, home_spread, kickoff):
+    """One odds-api event with a single book quoting the home team at `home_spread`."""
+    return {
+        "home_team": home, "away_team": away, "commence_time": kickoff,
+        "bookmakers": [{"last_update": kickoff, "markets": [{"key": "spreads", "outcomes": [
+            {"name": home, "point": home_spread}, {"name": away, "point": -home_spread}]}]}],
+    }
+
+
+def test_divisional_rematch_does_not_overwrite_this_weeks_line():
+    # Week 1 at the Giants, NYG -2.5. The week 17 rematch in Dallas, DAL -4.5, comes back
+    # in the same payload. The run must price week 1, oriented to the sheet's home team.
+    from madden.market import parse_odds_payload, soonest
+    payload = [
+        _event("Dallas Cowboys", "New York Giants", -4.5, "2026-12-27T18:00:00Z"),
+        _event("New York Giants", "Dallas Cowboys", -2.5, "2026-09-13T17:00:00Z"),
+    ]
+    lines = parse_odds_payload(payload, PARAMS)
+    ml, warnings = soonest(lines, "NYG", "DAL")
+    assert ml.commence_time.startswith("2026-09-13")
+    assert ml.line_for("NYG") == 2.5
+    assert any("2 meetings" in w for w in warnings)
+
+
+def test_line_is_reoriented_when_the_feed_disagrees_about_home():
+    from madden.market import parse_odds_payload, soonest
+    payload = [_event("San Francisco 49ers", "Los Angeles Rams", -1.5, "2026-09-11T10:35:00Z")]
+    ml, warnings = soonest(parse_odds_payload(payload, PARAMS), "LAR", "SF")
+    assert ml.line_for("LAR") == -1.5
+    assert any("re-oriented" in w for w in warnings)
