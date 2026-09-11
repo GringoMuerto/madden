@@ -19,7 +19,7 @@ supersedes: the first madden.md draft written earlier on 2026-09-10, now trashed
 
 **Inputs.** The sheet's frozen spreads; current market consensus spreads; official injury designations and inactives; opponent-adjusted efficiency metrics; schedule/venue; temperature for outdoor games.
 
-**Outputs.** A complete, submittable set of picks for the tranche being run, each with pick, drift, edge, confidence band, one-line driver, and a deviation-from-favorite flag. Plus blind games listed separately with leans and reasons. Plus the Monday night combined-score tiebreaker. Plus run health.
+**Outputs.** A complete, submittable set of picks for the tranche being run, each with pick, drift, edge, confidence band, one-line driver, and a deviation-from-favorite flag. Plus blind games listed separately with leans and reasons. Plus the Monday night combined-score tiebreaker. Plus three display-only sections under the board -- quarterback exposure, starter health, injured quarterbacks by depth-chart rank -- none of which carries points. Plus run health.
 
 **Reader.** Scott only. He submits manually.
 
@@ -62,7 +62,43 @@ The 50% row returning $96 against a $100 entry is the sanity check. Returns are 
 
 ## What actually carries this system
 
-The drift term carries the system. The power rating is not built. If it is ever built, it ships damped, and its weight is not to be increased without a measured A/B. The situational matrix is worth roughly one pick a season, two rules survived a holdout out of thirty tested, and it is not to be expanded without the same discipline. The injury valuation was designed and cancelled on 2026-09-10 because injuries reach the picks through the market line and a separate injury number would double count it; injury data flags unresolved starters only, with no points attached.
+The drift term carries the system. The power rating is not built. If it is ever built, it ships damped, and its weight is not to be increased without a measured A/B. The situational matrix is worth roughly one pick a season, two rules survived a holdout out of thirty tested, and it is not to be expanded without the same discipline. The injury valuation was designed and cancelled on 2026-09-10 because injuries reach the picks through the market line and a separate injury number would double count it; injury data flags and counts, with no points attached, on the terms set out immediately below.
+
+### What prints under the board
+
+Three sections print beneath every board. The first was built on 2026-09-10; the
+second and third were added on 2026-09-11 at Scott's request. **None of them is a price.** Each attaches no points and cannot move a pick, a
+band, an edge or the tiebreaker; each is there because Scott submits everything Sunday
+morning by choice, which leaves six or seven games a week picked with a designation open,
+and these say where to look before he submits.
+
+| Section | Covers | Included when |
+|---|---|---|
+| Quarterback exposure | Quarterbacks whose status is unresolved | Questionable or Doubtful, or no game status yet on a team whose final report has not published and whose latest practice was DNP or limited |
+| Starter health | Every team on the board, offence and defence separately, with a board total | Always. Counts listed starters with no row on this week's official report |
+| Injured quarterbacks | Every quarterback carrying a row, resolved or not, at his depth-chart rank | Always. Wider than exposure: a QB1 at full participation appears here and not there |
+
+**Starter is the depth chart's own word, not a judgment.** Offence is rank 1 at every slot
+of the published three-receiver package plus receivers ranked 1-3, eleven men for most
+teams. Defence is rank 1 at every slot of whichever base front the team lists, twelve: the
+eleven plus the nickel back the chart lists beside them. Special teams are not starters.
+
+**Healthy means the report says nothing about him**, which is blunt and is labelled blunt
+in the output: a full-participation note counts against a team exactly like a DNP, and a
+veteran rest day counts like an injury. The percentage is a pointer, not a measurement,
+and pushing it toward a severity weighting would rebuild the injury valuation that was
+designed and cancelled on 2026-09-10.
+
+**This resolves a contradiction in earlier drafts of this spec**, which said in one place
+that injury data flags unresolved *starters* and in another that the nflverse report feeds
+*the quarterback* exposure line. Starter health covers all starters; exposure and the
+injured-quarterback list stay quarterbacks only. Non-QB status adjudication remains Call
+A's, which is designed and not built.
+
+**Failure is loud, never silent.** No injury report means UNKNOWN for every team in both
+sections. No depth chart means starter health is UNKNOWN for every team and quarterbacks
+print without a rank. A team absent from the depth chart build prints UNKNOWN, never a
+clean sheet, and raises its own run-health line.
 
 ---
 
@@ -154,7 +190,7 @@ PICK            = the side the edge points to
 8. **Compute the edge** against the frozen line; convert to cover probability.
 9. **Band** and assign picks. Every game gets a pick.
 10. **Call B** — write the drivers.
-11. **Emit** the tranche sheet, the blind list, the tiebreaker, run health.
+11. **Emit** the tranche sheet, the blind list, the three display-only sections, the tiebreaker, run health.
 12. **Log** everything; grade completed games against the baselines.
 
 ### Power rating
@@ -402,7 +438,7 @@ Git-backed local project, run through Claude Code on the MacBook, invoked manual
 |---|---|---|---|
 | **the-odds-api.com** (hyphens — see warning) | Free, email only | 1 credit/call, ~20/month against 500 | Current consensus spreads, `last_update` timestamps, totals for the tiebreaker |
 | **ESPN unofficial API** | None | Free | **Not an injury source** (changed 2026-09-10). Its injury status is ESPN's own news summary, not the official designation, and official game statuses post Friday. On 2026-09-10 an entry marked `source: basic/manual` listed Michael Penix Jr. "Out" (Knee - ACL) while the official report had him at full participation, and that entry was the only reason ATL at PIT was flagged blind. Its comment attributed the status to the head coach, so it may prove right; that is the point. It is a summary of news, not the designation. Do not move injuries back to ESPN because it is the more convenient endpoint. |
-| **nflverse** (GitHub) | None | Free | Schedules, venue, closing spreads, play-by-play for EPA. **The injury source:** the official league injury report and the daily depth chart, used only for the quarterback exposure line (names, no points). Rebuilt daily about 12:00 UTC; the build time prints with every run. |
+| **nflverse** (GitHub) | None | Free | Schedules, venue, closing spreads, play-by-play for EPA. **The injury source:** the official league injury report and the daily depth chart, used only for the three display-only sections under the board (names and counts, no points). Rebuilt daily about 12:00 UTC; the build time prints with every run. |
 | **open-meteo.com** | None | Free | Forecast temperature and wind at the stadium for each kickoff: temperature for the 75°F dome-visitor rule, wind for the tiebreaker. Added 2026-09-10, replacing temperatures taken from a sportsbook's weather page. A failed fetch means no temperature, and the rule does not fire. |
 
 ⚠️ **The vendor publishes an impersonator warning about itself.** The real domain is **the-odds-api.com** (hyphens). An unaffiliated site at **theoddsapi.com** (no hyphens, registered 2024) resells their data without authorisation. A third similarly-named business, odds-api.io, is a separate company and was accidentally cited during design.

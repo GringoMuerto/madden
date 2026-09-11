@@ -73,8 +73,12 @@ erases the thing being corrected.
   staleness read from each book's own `last_update`.
 - Edge, key-number crossing, banding, deviation-from-favorite accounting.
 - Tiebreaker with the deliberate offset off the market total.
-- Quarterback exposure under the board, from the official injury report via nflverse
-  with depth-chart rank: names only, no points, no effect on any pick or band. The
+- Three display-only sections under the board, from the official injury report and the
+  daily depth chart via nflverse. **Quarterback exposure**: quarterbacks whose status is
+  unresolved. **Starter health**: the share of each team's listed starters with no row on
+  the report, offence and defence separately, with a board total. **Injured quarterbacks**:
+  every quarterback carrying a row, resolved or not, at his depth-chart rank. Names and
+  counts only, no points, no effect on any pick or band. The
   injury valuation was designed and cancelled; see the spec's *What actually carries
   this system*. Exposure needs no flag and cannot go dark quietly: a failed fetch, an
   empty week, and individual teams missing from the build each raise their own run-health

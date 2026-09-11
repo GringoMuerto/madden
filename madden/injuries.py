@@ -16,6 +16,11 @@ statuses yet, had him at full participation. It may prove right; it is still not
 official. Depth-chart rank comes from nflverse's daily depth-chart snapshot and is shown
 as a label, never used as a filter.
 
+This module also carries two things it does not itself print: every injury row, at every
+position, keyed by player, and the latest depth chart's starters by side of the ball.
+madden/health.py turns those into the starter-health chart and the injured-quarterback
+list under the board. Both are display only, on the same terms as exposure: no points.
+
 Unresolved means:
   * a game status of Questionable or Doubtful, or
   * no game status yet, on a team whose final report has not come out, and the latest
@@ -46,6 +51,16 @@ UNRESOLVED_PRACTICE = {
     "did not participate in practice": "did not practice",
     "limited participation in practice": "limited in practice",
 }
+PRACTICE_SHORT = {
+    "full participation in practice": "Full",
+    "limited participation in practice": "Limited",
+    "did not participate in practice": "DNP",
+}
+
+# The depth chart's own personnel groupings. Offence is the three-receiver package the
+# chart publishes; defence is whichever base front the team lists, never both.
+OFFENSE_GROUP = "3WR 1TE"
+DEFENSE_GROUPS = ("Base 3-4 D", "Base 4-3 D")
 
 
 @dataclass
@@ -59,6 +74,18 @@ class Quarterback:
 
 
 @dataclass
+class Injured:
+    """One row of the official report, normalised. Every position, not just quarterbacks."""
+    team: str
+    name: str
+    position: str
+    game_status: str       # verbatim, may be empty until the final report
+    practice: str          # Full | Limited | DNP, or verbatim if unrecognised
+    injury: str            # primary, plus a secondary the primary does not already name
+    rest: bool             # "not injury related - resting player": a day off, not a doubt
+
+
+@dataclass
 class Report:
     season: int
     week: int
@@ -67,6 +94,8 @@ class Report:
     teams: set = field(default_factory=set)              # teams with any row this week
     final_report_out: set = field(default_factory=set)   # teams with any game status
     depth: dict = field(default_factory=dict)            # gsis_id -> QB rank
+    rows: dict = field(default_factory=dict)             # gsis_id -> Injured, all positions
+    starters: dict = field(default_factory=dict)         # team -> {"OFF": [...], "DEF": [...]}
     depth_as_of: str = ""
     error: str = ""                                      # report fetch failed
     depth_error: str = ""
@@ -80,6 +109,61 @@ class Report:
         health says why. Loud, per game and once in run health.
         """
         return not self.error and not self.teams
+
+
+def _injured(row: dict, team: str) -> Injured:
+    """Normalise one report row. The report's own words, tidied, never reinterpreted."""
+    primary = (row.get("report_primary_injury")
+               or row.get("practice_primary_injury") or "").strip()
+    secondary = (row.get("practice_secondary_injury") or "").strip()
+    rest = primary.lower().startswith("not injury related")
+    if rest:
+        primary = "rest" + (f" / {secondary}" if secondary else "")
+    elif secondary and secondary.lower() not in primary.lower():
+        primary = f"{primary} / {secondary}" if primary else secondary
+    practice = (row.get("practice_status") or "").strip()
+    return Injured(
+        team=team, name=row.get("full_name", ""),
+        position=(row.get("position") or "").upper(),
+        game_status=(row.get("report_status") or "").strip(),
+        practice=PRACTICE_SHORT.get(practice.lower(), practice),
+        injury=primary, rest=rest)
+
+
+def _starters(snapshot: list) -> dict:
+    """team -> {"OFF": [(pos, name, gsis_id)], "DEF": [...]} from the latest depth chart.
+
+    Offence is rank 1 at every slot of the three-receiver package plus receivers ranked
+    1-3, which is eleven men for most teams and twelve where the chart ranks a fourth
+    receiver inside three. Defence is rank 1 at every slot of the team's own base front,
+    which is twelve: the eleven plus the nickel back the chart lists beside them.
+    Special teams are not starters here. A team that lists neither base front gets no
+    defensive side and reports UNKNOWN rather than clean.
+    """
+    groups: dict = {}
+    for r in snapshot:
+        groups.setdefault(from_nflverse(r.get("team", "")), set()).add(r.get("pos_grp", ""))
+    out: dict = {}
+    for r in snapshot:
+        team = from_nflverse(r.get("team", ""))
+        try:
+            rank = int(r["pos_rank"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        grp, pos = r.get("pos_grp", ""), r.get("pos_abb", "")
+        base = next((g for g in DEFENSE_GROUPS if g in groups[team]), None)
+        if grp == OFFENSE_GROUP and (rank == 1 or (pos == "WR" and rank <= 3)):
+            side = "OFF"
+        elif base and grp == base and rank == 1:
+            side = "DEF"
+        else:
+            continue
+        out.setdefault(team, {"OFF": [], "DEF": []})[side].append(
+            (pos, r.get("player_name", ""), r["gsis_id"]))
+    for team in out:
+        for side in out[team]:
+            out[team][side] = sorted(set(out[team][side]))
+    return out
 
 
 def _http(url: str) -> bytes:
@@ -115,6 +199,9 @@ def fetch(season: int, week: int, get=None) -> tuple:
         rep.teams.add(t)
         if (r.get("report_status") or "").strip():
             rep.final_report_out.add(t)
+        gsis = (r.get("gsis_id") or "").strip()
+        if gsis:
+            rep.rows[gsis] = _injured(r, t)
         if (r.get("position") or "").upper() == "QB":
             rep.quarterbacks.append(Quarterback(
                 team=t, name=r.get("full_name", ""), gsis_id=r.get("gsis_id", ""),
@@ -131,19 +218,22 @@ def fetch(season: int, week: int, get=None) -> tuple:
 
     try:
         raw = get(f"{RELEASES}/depth_charts/depth_charts_{season}.csv.gz")
-        drows = [r for r in csv.DictReader(io.StringIO(gzip.decompress(raw).decode("utf-8")))
-                 if r.get("pos_abb") == "QB"]
+        drows = list(csv.DictReader(io.StringIO(gzip.decompress(raw).decode("utf-8"))))
         latest: dict = {}
         for r in drows:
             latest[r["team"]] = max(latest.get(r["team"], ""), r["dt"])
-        for r in drows:
-            if r["dt"] == latest[r["team"]] and r.get("gsis_id"):
+        # One snapshot per team: the chart is republished daily and the file keeps history.
+        snapshot = [r for r in drows if r["dt"] == latest.get(r.get("team")) and r.get("gsis_id")]
+        for r in snapshot:
+            if r.get("pos_abb") == "QB":
                 rep.depth[r["gsis_id"]] = int(r["pos_rank"])
+        rep.starters = _starters(snapshot)
         rep.depth_as_of = max(latest.values()) if latest else ""
     except Exception as exc:                                        # noqa: BLE001
         rep.depth_error = f"{type(exc).__name__}: {exc}"
         warnings.append(f"depth chart unavailable ({rep.depth_error}); exposure lines "
-                        f"name quarterbacks without their rank")
+                        f"name quarterbacks without their rank, and starter health is "
+                        f"UNKNOWN for every team")
     return rep, warnings
 
 

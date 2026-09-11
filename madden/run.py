@@ -20,6 +20,7 @@ from pathlib import Path
 import yaml
 
 from .core import make_pick, tiebreaker
+from . import health
 from . import injuries
 from . import schedule
 from .market import fetch_lines, fetch_scores, load_offline, soonest
@@ -170,6 +171,13 @@ def guard_inputs(paths, cache: bool) -> str | None:
                 f"file was made in this session. Start Claude Code in ~/dev/madden, or run "
                 f"the engine from a terminal outside Claude Code.")
     return None
+
+
+def pct(healthy: int, total: int) -> str:
+    """"9/11   82%", or an em dash when the side has no listed starters to count."""
+    if not total:
+        return "-"
+    return f"{healthy}/{total}  {100 * healthy / total:3.0f}%"
 
 
 NO_LINE_PLAYED = "already played"
@@ -460,6 +468,60 @@ def main(argv=None) -> int:
                 f"({', '.join(dark)}): a team in each has no row in this injury build. "
                 f"Those games are UNKNOWN, not clear.")
 
+    # Starter health and injured quarterbacks, both display only, on the same terms as
+    # exposure above: counts and names, no points, no effect on any pick, band or edge.
+    board_teams: list = []
+    for p in picks:
+        for t in (p.game.away, p.game.home):
+            if t not in board_teams:
+                board_teams.append(t)
+
+    health_log: dict = {}
+    print("\nSTARTER HEALTH  listed starters with no row on this week's official report")
+    if report is None or report.error:
+        print("  UNKNOWN for every team: no injury report was read (see run health)")
+    elif report.depth_error:
+        print("  UNKNOWN for every team: the depth chart did not fetch, so there is no "
+              "starter list to count against (see run health)")
+    else:
+        print(f"  {'TEAM':<7}{'OFFENSE':>14}{'DEFENSE':>14}{'TOTAL':>14}")
+        dark, tot = [], [0, 0, 0, 0]
+        for team, oh, on, dh, dn in health.health(report, board_teams):
+            health_log[team] = {"offense": [oh, on], "defense": [dh, dn]}
+            if not on and not dn:
+                dark.append(team)
+                print(f"  {team:<7}{'UNKNOWN: not in this depth chart build':>39}")
+                continue
+            tot = [tot[0] + oh, tot[1] + on, tot[2] + dh, tot[3] + dn]
+            print(f"  {team:<7}{pct(oh, on):>14}{pct(dh, dn):>14}{pct(oh + dh, on + dn):>14}")
+        if tot[1] or tot[3]:
+            print(f"  {'BOARD':<7}{pct(tot[0], tot[1]):>14}{pct(tot[2], tot[3]):>14}"
+                  f"{pct(tot[0] + tot[2], tot[1] + tot[3]):>14}")
+        print("  healthy means no row on the report at all, so a full-participation note "
+              "counts here exactly")
+        print("  like a DNP and a rest day counts like an injury. No points, changes nothing")
+        if dark:
+            warnings.append(
+                f"starter health is UNKNOWN for {len(dark)} of {len(board_teams)} teams "
+                f"({', '.join(dark)}): no rows in this depth chart build, so those teams "
+                f"are unknown, not clear")
+
+    qb_log: dict = {}
+    print("\nINJURED QUARTERBACKS  every quarterback on the report, by depth-chart rank")
+    if report is None or report.error:
+        print("  UNKNOWN for every team: no injury report was read (see run health)")
+    else:
+        clear = []
+        for team, rows in health.quarterbacks(report, board_teams):
+            qb_log[team] = [f"{label} {name}, {said}" for label, name, said in rows]
+            if not rows:
+                clear.append(team)
+                continue
+            for i, (label, name, said) in enumerate(rows):
+                print(f"  {team if i == 0 else '':<5}{label:<10}{name:<23}{said}")
+        if clear:
+            print(f"  no quarterback on the report: {', '.join(clear)}")
+
     sections = handback_lines(picks)
     if sections:
         print()
@@ -501,6 +563,8 @@ def main(argv=None) -> int:
                            "error": report.error, "depth_error": report.depth_error}
                           if report else None),
         "exposure": exposure_log,
+        "starter_health": health_log,
+        "injured_quarterbacks": qb_log,
         "cache_used": args.cache,
         "temperatures_used": temps,
         "picks": [{
