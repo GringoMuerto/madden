@@ -225,86 +225,117 @@ def test_line_is_reoriented_when_the_feed_disagrees_about_home():
     assert any("re-oriented" in w for w in warnings)
 
 
-# Injury fetch, against a canned ESPN. Every earlier version failed silently, so these
-# pin the one property that matters: a team is read in full or reported FAILED.
+# Quarterback exposure, against a canned nflverse. Names only: nothing here may carry a
+# number, and a team with no data is UNKNOWN, never clean.
 
-def _espn(pages, entries, athletes, broken=()):
-    """A fake GET. pages: {page_no: [entry ids]} for team 1 (ATL)."""
-    from madden.injuries import CORE
-    count = sum(len(v) for v in pages.values())
-    table = {}
-    for n, ids in pages.items():
-        table[f"{CORE}/teams/1/injuries?page={n}"] = {
-            "count": count, "pageCount": len(pages), "items": [{"$ref": f"e/{i}"} for i in ids]}
-    for i, (status, date, who) in entries.items():
-        table[f"e/{i}"] = {"status": status, "date": date, "athlete": {"$ref": f"a/{who}"}}
-    for who, (name, pos) in athletes.items():
-        table[f"a/{who}"] = {"displayName": name, "position": {"abbreviation": pos}}
+INJ_HEADER = ("season,season_type,game_type,team,week,gsis_id,position,full_name,first_name,"
+              "last_name,report_primary_injury,report_status,practice_primary_injury,"
+              "practice_secondary_injury,practice_status")
+
+
+def _nflverse(rows, depth=(), broken=()):
+    """A fake GET. rows: (team, week, gsis, pos, name, report_status, practice_status, injury)."""
+    import gzip
+    import json as _json
+    from madden.injuries import RELEASE_API, RELEASES
+    lines = [INJ_HEADER] + [
+        f"2026,REG,REG,{t},{w},{g},{pos},{n},,,{inj},{rs},,,{ps}"
+        for t, w, g, pos, n, rs, ps, inj in rows]
+    dlines = ["dt,team,player_name,espn_id,gsis_id,pos_grp_id,pos_grp,pos_id,pos_name,"
+              "pos_abb,pos_slot,pos_rank"] + [
+        f"2026-09-10T12:01:46Z,{t},{n},,{g},21,3WR 1TE,8,Quarterback,QB,8,{rank}"
+        for t, g, n, rank in depth]
+    table = {
+        f"{RELEASES}/injuries/injuries_2026.csv": "\n".join(lines).encode(),
+        f"{RELEASE_API}/injuries": _json.dumps({"assets": [
+            {"name": "injuries_2026.csv", "updated_at": "2026-09-13T12:03:24Z"}]}).encode(),
+        f"{RELEASES}/depth_charts/depth_charts_2026.csv.gz":
+            gzip.compress("\n".join(dlines).encode()),
+    }
 
     def get(url):
-        if url in broken or url not in table:
-            raise RuntimeError(f"HTTPError: 403 Forbidden for {url}")
+        if any(b in url for b in broken) or url not in table:
+            raise RuntimeError(f"HTTP Error 404 for {url}")
         return table[url]
     return get
 
 
-def test_injuries_read_every_page_and_keep_each_players_latest_entry():
-    from madden.injuries import fetch_all
-    get = _espn(
-        pages={1: [1, 2], 2: [3]},
-        entries={1: ("Questionable", "2026-09-10T20:00Z", 10),
-                 2: ("Out", "2026-08-04T15:00Z", 11),
-                 3: ("Active", "2026-09-01T15:00Z", 11)},      # supersedes the old Out
-        athletes={10: ("Tua Tagovailoa", "QB"), 11: ("DeAngelo Malone", "LB")})
-    r = fetch_all(["ATL"], get=get)["ATL"]
-    assert r.fetched and not r.error
-    assert [(d.player, d.status) for d in r.quarterbacks(PARAMS["injuries"])] == [
-        ("Tua Tagovailoa", "questionable")]
-    assert len(r.designations) == 2                       # one per player, not per entry
-    assert "out" not in {d.status for d in r.designations}
+ATL_DEPTH = [("ATL", "g-tua", "Tua Tagovailoa", 1), ("ATL", "g-penix", "Michael Penix Jr.", 2)]
 
 
-def test_injury_page_failure_is_failed_not_clean():
-    from madden.injuries import CORE, fetch_all, summarise
-    get = _espn(pages={1: [1]}, entries={1: ("Out", "2026-09-07T15:00Z", 10)},
-                athletes={10: ("Michael Penix Jr.", "QB")},
-                broken={f"{CORE}/teams/1/injuries?page=1"})
-    reports = fetch_all(["ATL"], get=get)
-    assert not reports["ATL"].fetched and "403" in reports["ATL"].error
-    health = summarise(reports, PARAMS["injuries"])
-    assert any(h.startswith("INJURY FETCH FAILED") and "403" in h for h in health)
-    assert not any("no quarterback" in h for h in health)
-
-
-def test_unreadable_entries_fail_the_team():
-    # The exact failure of the previous version: pointers listed, contents never read.
-    from madden.injuries import fetch_all
-    get = _espn(pages={1: [1, 2]},
-                entries={1: ("Out", "2026-09-07T15:00Z", 10),
-                         2: ("Questionable", "2026-09-10T20:00Z", 11)},
-                athletes={10: ("A", "QB"), 11: ("B", "QB")}, broken={"e/2"})
-    r = fetch_all(["ATL"], get=get)["ATL"]
-    assert not r.fetched and "1 of 2 entries unreadable" in r.error
-
-
-def test_zero_injury_entries_is_failed():
-    from madden.injuries import fetch_all
-    r = fetch_all(["ATL"], get=_espn(pages={1: []}, entries={}, athletes={}))["ATL"]
-    assert not r.fetched and "no injury entries" in r.error
-
-
-def test_unreadable_athlete_behind_a_live_designation_fails_the_team():
-    from madden.injuries import fetch_all
-    get = _espn(pages={1: [1]}, entries={1: ("Out", "2026-09-07T15:00Z", 10)},
-                athletes={}, broken={"a/10"})
-    r = fetch_all(["ATL"], get=get)["ATL"]
-    assert not r.fetched and "athlete" in r.error
-
-
-def test_nothing_is_written_to_disk_without_the_cache_flag(tmp_path, monkeypatch):
+def test_exposure_names_an_unresolved_quarterback_with_rank_and_no_points():
     from madden import injuries
-    monkeypatch.setattr(injuries, "CACHE", tmp_path / ".cache")
-    get = _espn(pages={1: [1]}, entries={1: ("Questionable", "2026-09-10T20:00Z", 10)},
-                athletes={10: ("Tua Tagovailoa", "QB")})
-    injuries.fetch_all(["ATL"], get=get)
+    rep, _ = injuries.fetch(2026, 1, get=_nflverse([
+        ("ATL", 1, "g-tua", "QB", "Tua Tagovailoa", "Questionable",
+         "Limited Participation in Practice", "Oblique"),
+        ("PIT", 1, "g-x", "CB", "Donte Kent", "Out", "", "Knee"),
+    ], depth=ATL_DEPTH))
+    names, unknown = injuries.exposure(rep, "PIT", "ATL")
+    assert names == ["ATL QB Tua Tagovailoa (QB1), Questionable (Oblique)"]
+    assert unknown == []
+    assert rep.built == "2026-09-13T12:03:24Z"
+
+
+def test_out_and_full_participation_are_resolved():
+    from madden import injuries
+    rep, _ = injuries.fetch(2026, 1, get=_nflverse([
+        ("ATL", 1, "g-penix", "QB", "Michael Penix Jr.", "Out", "", "Knee"),
+        ("WAS", 1, "g-mar", "QB", "Marcus Mariota", "", "Full Participation in Practice", "Knee"),
+    ], depth=ATL_DEPTH))
+    assert injuries.exposure(rep, "PIT", "ATL") == ([], ["PIT"])
+    assert injuries.exposure(rep, "PHI", "WAS") == ([], ["PHI"])
+
+
+def test_no_game_status_counts_only_until_the_final_report():
+    from madden import injuries
+    dnp = ("CHI", 1, "g-bag", "QB", "Tyson Bagent", "", "Did Not Participate In Practice", "Back")
+    rep, _ = injuries.fetch(2026, 1, get=_nflverse([dnp, ("CAR", 1, "g-c", "OT", "X", "", "", "")]))
+    names, _ = injuries.exposure(rep, "CAR", "CHI")
+    assert names == ["CHI QB Tyson Bagent (not on the depth chart), no game status yet, "
+                     "did not practice (Back)"]
+    # Once any Chicago player carries a game status, the final report is out and a blank
+    # status means no designation.
+    final = ("CHI", 1, "g-g", "CB", "Kyler Gordon", "Out", "", "Hamstring")
+    rep, _ = injuries.fetch(2026, 1, get=_nflverse([dnp, final, ("CAR", 1, "g-c", "OT", "X", "", "", "")]))
+    assert injuries.exposure(rep, "CAR", "CHI") == ([], [])
+
+
+def test_team_missing_from_the_report_is_unknown_not_clean():
+    from madden import injuries
+    rep, _ = injuries.fetch(2026, 1, get=_nflverse([("DEN", 2, "g-n", "QB", "Bo Nix", "", "", "")]))
+    assert injuries.exposure(rep, "KC", "DEN") == ([], ["DEN", "KC"])
+
+
+def test_report_fetch_failure_is_unknown_for_every_game():
+    from madden import injuries
+    rep, _ = injuries.fetch(2026, 1, get=_nflverse([], broken=("injuries_2026.csv",)))
+    assert rep.error and "404" in rep.error
+    assert injuries.exposure(rep, "PIT", "ATL") == ([], ["ATL", "PIT"])
+    assert injuries.header(rep).startswith("INJURY REPORT FETCH FAILED")
+
+
+def test_depth_chart_failure_names_without_rank_and_warns():
+    from madden import injuries
+    rep, warns = injuries.fetch(2026, 1, get=_nflverse([
+        ("ATL", 1, "g-tua", "QB", "Tua Tagovailoa", "Doubtful", "", "Oblique"),
+    ], broken=("depth_charts",)))
+    assert injuries.exposure(rep, "PIT", "ATL")[0] == ["ATL QB Tua Tagovailoa, Doubtful (Oblique)"]
+    assert any("depth chart unavailable" in w for w in warns)
+
+
+def test_nflverse_rams_are_lar():
+    from madden import injuries
+    rep, _ = injuries.fetch(2026, 1, get=_nflverse([
+        ("LA", 1, "g-s", "QB", "Matthew Stafford", "Questionable", "", "Back")]))
+    assert injuries.exposure(rep, "LAR", "SF")[0] == [
+        "LAR QB Matthew Stafford (not on the depth chart), Questionable (Back)"]
+
+
+def test_forecast_is_not_written_to_disk_without_the_cache_flag(tmp_path, monkeypatch):
+    from madden import weather
+    monkeypatch.setattr(weather, "CACHE", tmp_path / ".cache")
+    monkeypatch.setattr(weather, "_fetch", lambda lat, lon, timeout: {"hourly": {
+        "time": ["2026-09-13T17:00"], "temperature_2m": [80.4], "wind_speed_10m": [5.0]}})
+    kickoff = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
+    assert weather.forecast("PIT", kickoff) == (80.4, 5.0)
     assert not (tmp_path / ".cache").exists()

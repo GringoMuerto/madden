@@ -60,6 +60,10 @@ erases the thing being corrected.
   staleness read from each book's own `last_update`.
 - Edge, key-number crossing, banding, deviation-from-favorite accounting.
 - Tiebreaker with the deliberate offset off the market total.
+- Quarterback exposure under the board, from the official injury report via nflverse
+  with depth-chart rank: names only, no points, no effect on any pick or band. The
+  injury valuation was designed and cancelled; see the spec's *What actually carries
+  this system*.
 - Run log, run health, degrade-and-warn on every data fault.
 
 ## What is not built

@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 from .core import make_pick, tiebreaker
-from .injuries import fetch_all, game_confidence, summarise
+from . import injuries
 from .market import fetch_lines, load_offline, soonest
 from .sheet import SheetFault, parse_sheet
 from .weather import forecast_many
@@ -139,17 +139,17 @@ def main(argv=None) -> int:
     ap.add_argument("--offline-lines", help="hand-entered lines instead of the API")
     ap.add_argument("--expect", type=int, help="expected game count; mismatch is a hard stop")
     ap.add_argument("--log", default="logs", help="directory for the run log")
-    ap.add_argument("--no-injuries", action="store_true", help="skip the injury fetch")
+    ap.add_argument("--no-injuries", action="store_true",
+                    help="skip the injury report (the exposure section then says UNKNOWN)")
     ap.add_argument("--no-weather", action="store_true", help="skip the forecast fetch")
     ap.add_argument("--cache", action="store_true",
-                    help="debugging only: read and write injuries (1h) and forecasts (6h) "
-                         "on disk. A real run never uses this; the spec says perishable "
-                         "data is fetched fresh and never written to disk")
+                    help="debugging only: read and write forecasts (6h) on disk. A real run "
+                         "never uses this; the spec says perishable data is fetched fresh "
+                         "and never written to disk")
     args = ap.parse_args(argv)
 
     load_env()
     params = load_yaml(args.params)
-    inj_cfg = params["injuries"]
     week = load_yaml(args.week) if args.week else {}
     temps = dict(week.get("temperatures", {}) or {})
     winds = dict(week.get("wind_mph", {}) or {})
@@ -159,8 +159,8 @@ def main(argv=None) -> int:
 
     warnings: list[str] = []
     if args.cache:
-        warnings.append("CACHE IN USE (--cache): injuries may be up to 1h old and forecasts "
-                        "up to 6h old. Not a submittable run")
+        warnings.append("CACHE IN USE (--cache): forecasts may be up to 6h old. "
+                        "Not a submittable run")
     try:
         if args.sheet:
             sheet_path = Path(args.sheet).expanduser()
@@ -186,21 +186,21 @@ def main(argv=None) -> int:
     days = TRANCHES[args.tranche]
     in_tranche = [g for g in games if not days or g.day in days]
 
-    # Injuries. On by default: an input that silently does not exist is the failure
-    # this run-health block exists for. Per team, every page, fetched fresh.
-    reports: dict = {}
+    # Quarterback exposure. Names only: injuries reach the picks through the market line,
+    # and a second injury number would double count it. Nothing here touches a pick.
+    report = None
     if args.no_injuries:
-        warnings.append("injury fetch skipped by --no-injuries: nothing in this run "
-                        "reflects availability except through the market line")
+        warnings.append("injury report skipped by --no-injuries: exposure is UNKNOWN for "
+                        "every game")
+    elif not (week.get("season") and week.get("week")):
+        warnings.append("the week file names no season and week, so the injury report "
+                        "cannot be matched to this slate: exposure is UNKNOWN for every game")
     else:
-        teams = sorted({t for g in in_tranche for t in (g.home, g.away)})
-        print(f"fetching injury designations for {len(teams)} teams...", flush=True)
-        try:
-            reports = fetch_all(teams, use_cache=args.cache)
-            warnings.extend(summarise(reports, inj_cfg))
-        except Exception as exc:                  # noqa: BLE001
-            warnings.append(f"INJURY FETCH FAILED ({exc}): nothing in this run reflects "
-                            f"availability except through the market line")
+        print("fetching the official injury report and depth chart...", flush=True)
+        report, inj_warnings = injuries.fetch(int(week["season"]), int(week["week"]))
+        warnings.extend(inj_warnings)
+        if report.error:
+            warnings.append(injuries.header(report))
 
     # Weather, for outdoor games with no temperature already supplied. The week file
     # always wins: a value someone entered deliberately beats a forecast.
@@ -248,18 +248,10 @@ def main(argv=None) -> int:
             warnings.append(f"{g.away} at {g.home}: line is {age:.1f}h old")
         market_lines[(g.home, g.away)] = ml
 
-        # A status finding lowers confidence in this game's number. Under the spec it can
-        # never flip a pick, so it is reported and carried, never applied to the edge.
-        penalty, reasons = (game_confidence(reports, g.home, g.away, inj_cfg)
-                            if reports else (0.0, []))
-        force_blind = penalty >= inj_cfg["blind_threshold"]
-
         pick = make_pick(
             g, ml.line_for(g.home) if ml else None, params,
             temp_f=temps.get(g.home), retractable_open=g.home in open_roofs,
-            blind=(f"{g.away}@{g.home}" in blind_games) or force_blind)
-        for r in reasons:
-            pick.warnings.append(r)
+            blind=f"{g.away}@{g.home}" in blind_games)
         picks.append(pick)
 
     submittable = [p for p in picks if p.side]
@@ -285,6 +277,33 @@ def main(argv=None) -> int:
         for extra in p.drivers[1:]:
             print(f"{'':<79}{extra}")
 
+    # Exposure, directly under the board: which games to look at before submitting.
+    exposure_log: dict = {}
+    print("\nEXPOSURE  quarterbacks with an unresolved status")
+    if report is None:
+        print("  UNKNOWN for every game: no injury report was read (see run health)")
+    else:
+        print(f"  {injuries.header(report)}")
+        clear = []
+        for p in picks:
+            g = p.game
+            names, unknown = injuries.exposure(report, g.home, g.away)
+            exposure_log[f"{g.away}@{g.home}"] = {"names": names, "unknown": unknown}
+            if not names and not unknown:
+                clear.append(f"{g.away} at {g.home}")
+                continue
+            parts = list(names)
+            if unknown and not report.error:
+                parts.append(f"UNKNOWN for {', '.join(unknown)}: no official report "
+                             f"in this build")
+            elif unknown:
+                parts.append("UNKNOWN")
+            print(f"  {g.away} at {g.home}: {'; '.join(parts)}")
+        if clear:
+            # "In this build": the report is only as current as nflverse's last daily
+            # rebuild, which can be a report behind the league's.
+            print(f"  no unresolved quarterback in this build: {', '.join(clear)}")
+
     if handbacks:
         print("\nHANDBACKS (each still carries a lean, so the sheet is always submittable)")
         for p in handbacks:
@@ -300,10 +319,9 @@ def main(argv=None) -> int:
         print(f"  {tb['reason']}")
 
     all_warnings = warnings + [w for p in picks for w in p.warnings]
-    if all_warnings:
-        print("\nRUN HEALTH")
-        for w in dict.fromkeys(all_warnings):
-            print(f"  ! {w}")
+    print("\nRUN HEALTH")
+    for w in dict.fromkeys(all_warnings):
+        print(f"  ! {w}")
     if params["power_rating"]["enabled"] is False:
         print("  ! power rating layer disabled: the model term is zero, so every number here "
               "is the market plus the situational matrix and nothing else")
@@ -316,8 +334,10 @@ def main(argv=None) -> int:
         "sheet_week": week_of(sheet_path),
         "spec_version": params["spec_version"],
         "deviations": len(deviations),
-        "injuries_fetched": sorted(t for t, r in reports.items() if r.fetched),
-        "injuries_failed": {t: r.error for t, r in sorted(reports.items()) if not r.fetched},
+        "injury_report": ({"built": report.built, "depth_as_of": report.depth_as_of,
+                           "error": report.error, "depth_error": report.depth_error}
+                          if report else None),
+        "exposure": exposure_log,
         "cache_used": args.cache,
         "temperatures_used": temps,
         "picks": [{
