@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +32,9 @@ TRANCHES = {
     "all": None,
 }
 
+# "Eustace - NFL2026w0.xlsx" -> 0, "NFL2026w12.xlsx" -> 12
+WEEK_IN_NAME = re.compile(r"w(?:eek)?[ _-]?(\d{1,2})(?!\d)", re.IGNORECASE)
+
 
 def load_env(start: Path | None = None) -> None:
     """Read .env from the project root into os.environ. Existing vars always win."""
@@ -49,8 +53,22 @@ def load_env(start: Path | None = None) -> None:
         return
 
 
-def newest_sheet(params, root: Path) -> Path:
-    """Find the most recent xlsx in the configured sheets directory."""
+def week_of(path: Path):
+    """The week number in a filename, or None."""
+    m = WEEK_IN_NAME.search(path.stem)
+    return int(m.group(1)) if m else None
+
+
+def pick_sheet(params, root: Path, want_week: int | None = None):
+    """Choose the week's sheet by the number in its NAME, not its timestamp.
+
+    Modification time is not a week number. Re-saving an old sheet, a Drive re-sync,
+    or just opening one to look at it all touch the timestamp, and the failure would be
+    silent: a normal-looking board priced against last week's frozen lines. The name is
+    what the operator actually sets.
+
+    Returns (path, warnings).
+    """
     raw = os.environ.get("MADDEN_SHEETS_DIR") or (
         params.get("sheets") or {}).get("directory", "sheets")
     folder = Path(raw).expanduser()
@@ -60,11 +78,48 @@ def newest_sheet(params, root: Path) -> Path:
         raise SheetFault(
             f"sheets directory {folder} does not exist. Set MADDEN_SHEETS_DIR in .env "
             f"to wherever you keep the weekly sheets.")
+
     found = [f for f in folder.glob("*.xlsx") if not f.name.startswith("~$")]
     if not found:
         raise SheetFault(
             f"no xlsx found in {folder}. Put this week's sheet there, or pass --sheet.")
-    return max(found, key=lambda f: f.stat().st_mtime)
+
+    numbered = [(week_of(f), f) for f in found]
+    numbered = [(w, f) for w, f in numbered if w is not None]
+    unnumbered = [f for f in found if week_of(f) is None]
+    warnings = []
+
+    if want_week is not None:
+        matches = [f for w, f in numbered if w == want_week]
+        if not matches:
+            raise SheetFault(
+                f"no sheet for week {want_week} in {folder}. Found: "
+                f"{', '.join(sorted(f.name for f in found))}")
+        if len(matches) > 1:
+            warnings.append(
+                f"{len(matches)} sheets name week {want_week}; using "
+                f"{max(matches, key=lambda f: f.stat().st_mtime).name}")
+        return max(matches, key=lambda f: f.stat().st_mtime), warnings
+
+    if not numbered:
+        chosen = max(found, key=lambda f: f.stat().st_mtime)
+        warnings.append(
+            f"no week number in any filename, so the newest file was used ({chosen.name}). "
+            f"Timestamps are not week numbers -- check this is the right sheet, or pass "
+            f"--sheet or --sheet-week.")
+        return chosen, warnings
+
+    top = max(w for w, _ in numbered)
+    matches = [f for w, f in numbered if w == top]
+    chosen = max(matches, key=lambda f: f.stat().st_mtime)
+    if len(matches) > 1:
+        warnings.append(
+            f"{len(matches)} sheets name week {top}; using {chosen.name}")
+    if unnumbered:
+        warnings.append(
+            f"ignored {len(unnumbered)} file(s) with no week number in the name: "
+            f"{', '.join(sorted(f.name for f in unnumbered))}")
+    return chosen, warnings
 
 
 def load_yaml(path):
@@ -74,8 +129,10 @@ def load_yaml(path):
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Madden: weekly ATS picks for the office pool")
-    ap.add_argument("--sheet", help="the operator's xlsx; defaults to the newest "
-                                    "file in MADDEN_SHEETS_DIR")
+    ap.add_argument("--sheet", help="the operator's xlsx; defaults to the highest "
+                                    "week number in MADDEN_SHEETS_DIR")
+    ap.add_argument("--sheet-week", type=int,
+                    help="use the sheet naming this week number rather than the highest")
     ap.add_argument("--params", default="params.yaml")
     ap.add_argument("--week", help="week file: neutral sites, blind flags, overrides")
     ap.add_argument("--tranche", default="all", choices=sorted(TRANCHES))
@@ -97,17 +154,23 @@ def main(argv=None) -> int:
     blind_games = set(week.get("blind") or [])
     open_roofs = set(week.get("retractable_open") or [])
 
+    warnings: list[str] = []
     try:
-        sheet_path = Path(args.sheet).expanduser() if args.sheet else newest_sheet(
-            params, Path(__file__).resolve().parent.parent)
-        print(f"sheet: {sheet_path}")
+        if args.sheet:
+            sheet_path = Path(args.sheet).expanduser()
+        else:
+            sheet_path, sheet_warnings = pick_sheet(
+                params, Path(__file__).resolve().parent.parent, args.sheet_week)
+            warnings.extend(sheet_warnings)
+        wk = week_of(sheet_path)
+        print(f"sheet: {sheet_path.name}" + (f"  (week {wk})" if wk is not None else ""))
+        print(f"  {sheet_path}")
         games = parse_sheet(str(sheet_path), expected_games=args.expect,
                             neutral_sites=neutral)
     except SheetFault as exc:
         print(f"SHEET FAULT, halting: {exc}", file=sys.stderr)
         return 2
 
-    warnings: list[str] = []
     try:
         lines = load_offline(args.offline_lines) if args.offline_lines else fetch_lines(params)
     except Exception as exc:                      # degrade and warn, never stop
@@ -239,6 +302,7 @@ def main(argv=None) -> int:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     record = {
         "run": stamp, "tranche": args.tranche, "sheet": str(sheet_path),
+        "sheet_week": week_of(sheet_path),
         "spec_version": params["spec_version"],
         "deviations": len(deviations),
         "injuries_fetched": sorted(t for t, r in reports.items() if r.fetched),
