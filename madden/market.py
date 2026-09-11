@@ -26,6 +26,10 @@ from .teams import abbr
 
 # The real vendor is the-odds-api.com WITH hyphens. See params.yaml.
 
+# The feed returns every upcoming event for the season, so divisional opponents show up
+# twice. Only meetings inside this window are candidates for the week being run.
+NEAR_TERM_DAYS = 10
+
 
 @dataclass
 class MarketLine:
@@ -103,7 +107,11 @@ def fetch_lines(params, api_key: str | None = None, timeout: int = 20) -> dict:
 def parse_odds_payload(payload, params) -> dict:
     """Turn the vendor payload into consensus lines, keyed by the pair of teams.
 
-    The value is a LIST of events sorted by kickoff, not a single line. See below.
+    The value is a LIST of events sorted by kickoff, not a single line. Divisional
+    opponents meet twice a season and the feed returns every upcoming event, so a pair of
+    teams can have more than one. Keying on the pair alone would let a week 14 rematch
+    overwrite week 1, which is exactly the kind of silent wrong answer that looks like a
+    plausible line. `soonest()` picks the right one.
     """
     how = params["odds_api"]["consensus"]
     out: dict = {}
@@ -140,29 +148,64 @@ def parse_odds_payload(payload, params) -> dict:
             last_update=max(stamps) if stamps else None,
             commence_time=event.get("commence_time"),
         )
-        # Divisional opponents meet twice a season and the feed returns every upcoming
-        # event, so a pair of teams can have more than one. Keep them all; the caller
-        # picks the right one by kickoff. Keying on the pair alone lets a week 14
-        # rematch overwrite week 1, which is exactly the kind of silent wrong answer
-        # that looks like a plausible line.
         out.setdefault(frozenset((home, away)), []).append(line)
     for events in out.values():
         events.sort(key=lambda e: e.commence_time or "")
     return out
 
 
-def soonest(lines: dict, home: str, away: str) -> tuple[MarketLine | None, list[str]]:
-    """Return the next scheduled meeting of these two teams, plus any warnings."""
+def soonest(lines: dict, home: str, away: str, now=None,
+            within_days: int = NEAR_TERM_DAYS) -> tuple[MarketLine | None, list[str]]:
+    """Return this week's meeting of these two teams, plus any warnings.
+
+    Two filters, in order:
+
+      already kicked off  -- dropped. A live or finished game's line is not a price you
+                             can pick against, and the feed does return them.
+      months away         -- dropped. A November rematch between divisional opponents is
+                             not an ambiguity to warn about, it is a different game.
+
+    Only a genuine ambiguity -- more than one meeting still inside the window -- produces
+    a warning. Warning on the normal case trains the reader to ignore the warnings, which
+    is worse than not having them.
+    """
     events = lines.get(frozenset((home, away))) or []
     warnings: list[str] = []
     if not events:
         return None, warnings
-    chosen = events[0]
-    if len(events) > 1:
-        others = ", ".join(e.commence_time or "?" for e in events[1:])
+
+    now = now or datetime.now(timezone.utc)
+    upcoming, started = [], []
+    for e in events:
+        ts = e.starts_at()
+        if ts is None:
+            upcoming.append(e)
+            continue
+        days = (ts - now).total_seconds() / 86400.0
+        if days < 0:
+            started.append(e)
+        elif days <= within_days:
+            upcoming.append(e)
+
+    if not upcoming and started:
         warnings.append(
-            f"{away} at {home}: the feed listed {len(events)} meetings of these teams; "
-            f"using the soonest ({chosen.commence_time}), ignoring {others}")
+            f"{away} at {home}: every meeting the feed returned has already kicked off "
+            f"(most recent {started[-1].commence_time}). No line to pick against.")
+        return None, warnings
+
+    if not upcoming:
+        warnings.append(
+            f"{away} at {home}: the feed has no meeting within {within_days} days. "
+            f"Next listed is {events[0].commence_time}.")
+        return None, warnings
+
+    chosen = upcoming[0]
+    if len(upcoming) > 1:
+        others = ", ".join(e.commence_time or "?" for e in upcoming[1:])
+        warnings.append(
+            f"{away} at {home}: {len(upcoming)} meetings inside {within_days} days; "
+            f"using {chosen.commence_time}, ignoring {others}. This is unexpected -- "
+            f"check the sheet is the week you think it is.")
     if chosen.home != home:
         warnings.append(
             f"{away} at {home}: the feed calls {chosen.home} the home team, the sheet "
