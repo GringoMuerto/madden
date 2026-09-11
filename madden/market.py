@@ -29,12 +29,35 @@ from .teams import abbr
 
 @dataclass
 class MarketLine:
-    home: str
+    home: str                    # the API's home team, which is not always the sheet's
     away: str
-    home_line: float | None      # points the home team is favored by
+    home_line: float | None      # points THIS object's home team is favored by
     total: float | None
     books: int
     last_update: str | None
+    commence_time: str | None = None
+
+    def line_for(self, home: str) -> float | None:
+        """Re-orient the line to the given home team.
+
+        The API's notion of home and the sheet's can disagree, most obviously at a
+        neutral site. Returning the number without checking silently inverts the game.
+        """
+        if self.home_line is None:
+            return None
+        if home == self.home:
+            return self.home_line
+        if home == self.away:
+            return -self.home_line
+        raise ValueError(f"{home} is not in this event ({self.away} at {self.home})")
+
+    def starts_at(self):
+        if not self.commence_time:
+            return None
+        try:
+            return datetime.fromisoformat(self.commence_time.replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     def age_hours(self, now=None) -> float | None:
         if not self.last_update:
@@ -61,7 +84,7 @@ def fetch_lines(params, api_key: str | None = None, timeout: int = 20) -> dict:
     api_key = api_key or os.environ.get("ODDS_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "ODDS_API_KEY is not set. Put it in .env (which .gitignore excludes) and export it. "
+            "ODDS_API_KEY is not set. Put it in .env (which .gitignore excludes). "
             "The key never goes in the vault, a repo, or a conversation.")
 
     query = urllib.parse.urlencode({
@@ -78,7 +101,10 @@ def fetch_lines(params, api_key: str | None = None, timeout: int = 20) -> dict:
 
 
 def parse_odds_payload(payload, params) -> dict:
-    """Turn the vendor payload into consensus lines keyed by the pair of teams."""
+    """Turn the vendor payload into consensus lines, keyed by the pair of teams.
+
+    The value is a LIST of events sorted by kickoff, not a single line. See below.
+    """
     how = params["odds_api"]["consensus"]
     out: dict = {}
     for event in payload:
@@ -106,14 +132,42 @@ def parse_odds_payload(payload, params) -> dict:
                             except (KeyError, ValueError, TypeError):
                                 continue
         stamps = [s for s in stamps if s]
-        out[frozenset((home, away))] = MarketLine(
+        line = MarketLine(
             home=home, away=away,
             home_line=_consensus(spreads, how),
             total=_consensus(totals, how),
             books=len(event.get("bookmakers", [])),
             last_update=max(stamps) if stamps else None,
+            commence_time=event.get("commence_time"),
         )
+        # Divisional opponents meet twice a season and the feed returns every upcoming
+        # event, so a pair of teams can have more than one. Keep them all; the caller
+        # picks the right one by kickoff. Keying on the pair alone lets a week 14
+        # rematch overwrite week 1, which is exactly the kind of silent wrong answer
+        # that looks like a plausible line.
+        out.setdefault(frozenset((home, away)), []).append(line)
+    for events in out.values():
+        events.sort(key=lambda e: e.commence_time or "")
     return out
+
+
+def soonest(lines: dict, home: str, away: str) -> tuple[MarketLine | None, list[str]]:
+    """Return the next scheduled meeting of these two teams, plus any warnings."""
+    events = lines.get(frozenset((home, away))) or []
+    warnings: list[str] = []
+    if not events:
+        return None, warnings
+    chosen = events[0]
+    if len(events) > 1:
+        others = ", ".join(e.commence_time or "?" for e in events[1:])
+        warnings.append(
+            f"{away} at {home}: the feed listed {len(events)} meetings of these teams; "
+            f"using the soonest ({chosen.commence_time}), ignoring {others}")
+    if chosen.home != home:
+        warnings.append(
+            f"{away} at {home}: the feed calls {chosen.home} the home team, the sheet "
+            f"calls {home}. The line has been re-oriented to the sheet.")
+    return chosen, warnings
 
 
 def load_offline(path: str) -> dict:
@@ -128,9 +182,9 @@ def load_offline(path: str) -> dict:
         if key.startswith("_"):        # comment keys
             continue
         away, home = [abbr(p.strip()) for p in key.split("@")]
-        out[frozenset((home, away))] = MarketLine(
+        out[frozenset((home, away))] = [MarketLine(
             home=home, away=away,
             home_line=val.get("home_line"), total=val.get("total"),
             books=int(val.get("books", 0)), last_update=val.get("last_update"),
-        )
+        )]
     return out
