@@ -69,7 +69,8 @@ erases the thing being corrected.
 - **Call A**, status adjudication and model-validity verdicts. Until it exists, structural
   breaks are declared by hand in the week file's `blind:` list.
 - **Call B**, the writer. Drivers are currently generated in code from the actual inputs.
-- **Schedule feed** for venue, roof state and temperature. The week file stands in.
+- **Schedule feed** for venue and roof state. The week file stands in. Temperature and
+  wind now come from open-meteo (`madden/weather.py`); the week file only overrides them.
 - **Backtest harness.** Needs nflverse ingest plus the pool archive. This is what would
   re-establish the 56.9% measurement, which currently exists only as a claim in the spec
   because the sandbox that produced it was discarded.

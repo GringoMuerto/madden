@@ -1,6 +1,7 @@
-# Week file: everything the missing schedule feed would otherwise supply.
-# Temperatures are kickoff forecasts for OUTDOOR games only, keyed by HOME team.
-# Source: NFLWeather.com via SBR weather report, 10 Sep 2026.
+# Week file: what the missing schedule feed would otherwise supply.
+# Temperature and wind come from open-meteo (madden/weather.py) at each game's kickoff.
+# Anything entered here OVERRIDES the forecast, so enter a value only when you have a
+# source on the spec's data-layer list. Never from a sports or betting site.
 week: 1
 season: 2026
 
@@ -8,18 +9,8 @@ neutral_sites:
   - "SF@LAR"          # Melbourne Cricket Ground. The operator capitalised the Rams;
                       # they are not at home. Home rules void.
 
-temperatures:
-  CIN: 82
-  TEN: 88
-  PIT: 79
-  CAR: 87
-  JAX: 88
-  PHI: 82
-  NYG: 77
-  KC:  83
-
-wind_mph:
-  KC: 12
+temperatures: {}      # forecast supplies these; override only from an allowlisted source
+wind_mph: {}          # forecast supplies these; override only from an allowlisted source
 
 retractable_open: []  # none reported open
 blind: []             # no Call A yet, so structural breaks are declared by hand

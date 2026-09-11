@@ -335,6 +335,7 @@ Git-backed local project, run through Claude Code on the MacBook, invoked manual
 | **the-odds-api.com** (hyphens — see warning) | Free, email only | 1 credit/call, ~20/month against 500 | Current consensus spreads, `last_update` timestamps, totals for the tiebreaker |
 | **ESPN unofficial API** | None | Free | Per-team injury endpoints. Undocumented — treat failure as degrade-and-warn. |
 | **nflverse** (GitHub) | None | Free | Schedules, venue, closing spreads, play-by-play for EPA |
+| **open-meteo.com** | None | Free | Forecast temperature and wind at the stadium for each kickoff: temperature for the 75°F dome-visitor rule, wind for the tiebreaker. Added 2026-09-10, replacing temperatures taken from a sportsbook's weather page. A failed fetch means no temperature, and the rule does not fire. |
 
 ⚠️ **The vendor publishes an impersonator warning about itself.** The real domain is **the-odds-api.com** (hyphens). An unaffiliated site at **theoddsapi.com** (no hyphens, registered 2024) resells their data without authorisation. A third similarly-named business, odds-api.io, is a separate company and was accidentally cited during design.
 
