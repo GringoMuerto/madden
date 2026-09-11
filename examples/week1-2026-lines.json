@@ -1,0 +1,18 @@
+{
+  "_comment": "Week 1 2026 market consensus, hand-entered from bet365 via SBR (7 Sep) cross-checked against ESPN (10 Sep). home_line = points the HOME team is favored by. Replace with a live API fetch when credits allow.",
+  "SF@LAR":  {"home_line": 3.5,  "total": 48.5, "books": 1},
+  "CLE@JAX": {"home_line": 8.5,  "total": 40.5, "books": 1},
+  "TB@CIN":  {"home_line": 3.5,  "total": 50.5, "books": 1},
+  "BAL@IND": {"home_line": -3.5, "total": 48.5, "books": 1},
+  "ATL@PIT": {"home_line": 3.5,  "total": 41.5, "books": 1},
+  "BUF@HOU": {"home_line": -1.5, "total": 44.5, "books": 1},
+  "CHI@CAR": {"home_line": -2.5, "total": 46.5, "books": 1},
+  "NYJ@TEN": {"home_line": 1.5,  "total": 39.5, "books": 1},
+  "NO@DET":  {"home_line": 6.5,  "total": 49.5, "books": 1},
+  "ARI@LAC": {"home_line": 9.5,  "total": 47.5, "books": 1},
+  "MIA@LV":  {"home_line": 3.5,  "total": 40.5, "books": 1},
+  "WAS@PHI": {"home_line": 5.5,  "total": 44.5, "books": 1},
+  "GB@MIN":  {"home_line": 1.5,  "total": 46.5, "books": 1},
+  "DAL@NYG": {"home_line": -2.5, "total": 48.5, "books": 1},
+  "DEN@KC":  {"home_line": 2.5,  "total": 43.5, "books": 1}
+}
