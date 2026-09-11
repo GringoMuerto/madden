@@ -10,9 +10,11 @@ status is unresolved, so Scott knows which games to look at before he submits.
 
 Source: the official league injury report as nflverse publishes it -- one row per
 player per week, the latest report, rebuilt daily at about 12:00 UTC. Not ESPN's feed,
-which mixes an editorial status with the official one; in week 1 it listed a quarterback
-"Out" whom the official report had at full participation. Depth-chart rank comes from
-nflverse's daily depth-chart snapshot and is shown as a label, never used as a filter.
+whose status is its own news summary, not the official designation: in week 1 it listed
+a quarterback "Out" on a coach's statement while the official report, with no game
+statuses yet, had him at full participation. It may prove right; it is still not
+official. Depth-chart rank comes from nflverse's daily depth-chart snapshot and is shown
+as a label, never used as a filter.
 
 Unresolved means:
   * a game status of Questionable or Doubtful, or
