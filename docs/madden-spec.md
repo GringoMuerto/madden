@@ -86,7 +86,7 @@ The weekly sequence is identical every run. Nothing about its order varies by in
 **Lives at** `plugins/scott-agents/skills/madden/SKILL.md` in `GringoMuerto/claude-skills`.
 **Invoked** as `/madden` from a Claude Code session started in `~/dev/madden`. Project settings load only from the session's starting directory, so a session started anywhere else has no guardrails, and the engine refuses to run in it.
 
-**May:** fetch and compare `main` to `origin/main`; run `python -m madden.run` with the documented flags; read any file in the repo and the run log; fetch from the three allowlisted sources in a follow-up; report the engine's output.
+**May:** fetch and compare `main` to `origin/main` (cannot run as installed: see Known defect below); run `python -m madden.run` with the documented flags; read any file in the repo and the run log; fetch from the three allowlisted sources in a follow-up; report the engine's output.
 
 | May not | Enforced by |
 |---|---|
@@ -105,7 +105,13 @@ The exact rules live in `.claude/settings.json` and `run.py`; this table says wh
 **Costs accepted.**
 - Every file write in a session started in `~/dev/madden` asks Scott, maintenance included, and including Claude's own memory and plan writes there. That is the gate on engine changes.
 - `git pull` cannot update engine files from inside the sandbox. Under the sole-writer rule origin should never be ahead; when it is, Scott runs `! git -C ~/dev/madden pull` himself.
-- The repo root stays writable so `git fetch` works. A file created there could shadow a module the engine imports. That takes deliberate sabotage rather than drift, and closing it would break fetch.
+- The repo root stays writable. It was left writable so `git fetch` would work, and fetch does not work in the sandbox (Known defect below). A file created there could shadow a module the engine imports. That takes deliberate sabotage rather than drift.
+
+**Known defect, found 2026-09-11 during the install check: `git fetch` does not work inside the sandbox, over either transport.** Not fixed; no fix designed.
+- SSH: the sandbox routes it through its network proxy, which refuses the connection for lack of authentication.
+- HTTPS: reaches GitHub, but git gets no credentials inside the sandbox (`could not read Username for 'https://github.com'`).
+- Consequence: the operator's compare-`main`-to-`origin/main` step cannot run as installed, so the standing rule that `main` equals `origin/main` before a run is not checked from inside a session. `git push` fails the same way.
+- The sandbox also write-protects `.git/config`, so the remote cannot be changed from inside a session.
 
 ---
 

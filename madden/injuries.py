@@ -34,6 +34,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
+from .net import urlopen
+
 RELEASES = "https://github.com/nflverse/nflverse-data/releases/download"
 RELEASE_API = "https://api.github.com/repos/nflverse/nflverse-data/releases/tags"
 TIMEOUT = 30
@@ -78,7 +80,7 @@ class Report:
 
 def _http(url: str) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "madden/1.0"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+    with urlopen(req, timeout=TIMEOUT) as resp:
         return resp.read()
 
 

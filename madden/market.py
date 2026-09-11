@@ -18,10 +18,10 @@ import json
 import os
 import statistics
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .net import urlopen
 from .teams import abbr
 
 # The real vendor is the-odds-api.com WITH hyphens. See params.yaml.
@@ -96,7 +96,7 @@ def fetch_lines(params, api_key: str | None = None, timeout: int = 20) -> dict:
         "oddsFormat": cfg["odds_format"],
     })
     url = f"{cfg['base_url']}/sports/{cfg['sport']}/odds?{query}"
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
+    with urlopen(url, timeout=timeout) as resp:
         remaining = resp.headers.get("x-requests-remaining")
         payload = json.load(resp)
     if remaining is not None:

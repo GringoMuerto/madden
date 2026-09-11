@@ -367,3 +367,39 @@ def test_guard_is_off_outside_claude_code(tmp_path, monkeypatch):
 def test_cache_is_refused_under_claude_code(monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "1")
     assert guard_inputs([], cache=True) is not None
+
+
+# Under the sandbox proxy a request sent with "Connection: close" can come back with the
+# tail of its body missing (madden/net.py). Each fetcher's request is captured at the
+# point http.client would send it, so nothing reaches the network.
+
+class _Captured(Exception):
+    pass
+
+
+def _fetchers():
+    from madden import injuries, market, weather
+    return {
+        "market": lambda: market.fetch_lines(PARAMS, api_key="test-key"),
+        "injuries": lambda: injuries._http(f"{injuries.RELEASES}/injuries/injuries_2026.csv"),
+        "weather": lambda: weather._fetch(40.447, -80.016, timeout=5),
+    }
+
+
+@pytest.mark.parametrize("name", ["market", "injuries", "weather"])
+def test_no_fetcher_sends_connection_close(name, monkeypatch):
+    import http.client
+    sent = []
+
+    def capture(self, message_body=None, encode_chunked=False):
+        sent.append(b"\r\n".join(self._buffer).decode("latin-1"))
+        raise _Captured
+
+    monkeypatch.setattr(http.client.HTTPConnection, "_send_output", capture)
+    with pytest.raises(_Captured):
+        _fetchers()[name]()
+    # _buffer is http.client's private header list; this line stops a silent pass if
+    # a future Python stops building the request there.
+    assert sent and sent[0].startswith("GET ")
+    headers = [line.lower() for line in sent[0].split("\r\n")[1:]]
+    assert not any(h.startswith("connection:") for h in headers), sent[0]

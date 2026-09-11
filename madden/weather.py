@@ -23,6 +23,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .net import urlopen
+
 CACHE = Path(".cache")
 CACHE_TTL_SECONDS = 6 * 3600
 
@@ -52,7 +54,7 @@ def _fetch(lat: float, lon: float, timeout: int):
            f"&hourly=temperature_2m,wind_speed_10m&temperature_unit=fahrenheit"
            f"&wind_speed_unit=mph&forecast_days=10&timezone=UTC")
     req = urllib.request.Request(url, headers={"User-Agent": "madden/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urlopen(req, timeout=timeout) as resp:
         return json.load(resp)
 
 
