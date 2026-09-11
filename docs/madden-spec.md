@@ -127,7 +127,7 @@ The weekly sequence is identical every run. Nothing about its order varies by in
 | May not | Enforced by |
 |---|---|
 | Change engine code, parameters, tests, spec, README, week or example files, sheets, `.env` | Sandbox `denyWrite` in `.claude/settings.json`, which blocks Bash and every subprocess it starts |
-| Write any file with Claude's file tools, anywhere | `ask` on `Edit(//**)`: a prompt to Scott in every permission mode, including auto and bypass — **no prompt was seen at install check: see Known defect below** |
+| Write any file with Claude's file tools, anywhere | **Nothing, as installed.** `ask` on `Edit(//**)` does not fire, confirmed by controlled retest 2026-09-11: see Known defect below |
 | Produce a pick, line, band or driver by any route but the engine, including a hand-made sheet, params, week or lines file | Engine input guard in `run.py`: under Claude Code the engine refuses if any input file is writable by the running process. `--cache` refused under Claude Code |
 | Run in a session where the guardrails did not load | The same guard: without the sandbox `params.yaml` is writable, so the engine refuses. `failIfUnavailable` refuses to start a session whose sandbox cannot |
 | Reach any host but the-odds-api, nflverse on GitHub, open-meteo | Sandbox network allowlist; `strictAllowlist` in Scott's user settings makes an off-list host a denial rather than an auto-mode classifier decision |
@@ -139,7 +139,7 @@ The exact rules live in `.claude/settings.json` and `run.py`; this table says wh
 **Left in prose deliberately.** Presenting the engine's output unrewritten: the text of a reply cannot be permission-gated. Mitigation: every report cites the log path the engine printed, so any figure can be checked against the file. Also prose: voice, the Sunday timing note.
 
 **Costs accepted.**
-- Every file write in a session started in `~/dev/madden` asks Scott, maintenance included, and including Claude's own memory and plan writes there. That is the gate on engine changes.
+- Every file write in a session started in `~/dev/madden` was to ask Scott, maintenance included, and including Claude's own memory and plan writes there. That was to be the gate on engine changes. **It is not in place**: see the Known defect below. The cost was accepted and the control was never delivered.
 - `git pull` cannot update engine files from inside the sandbox. Under the sole-writer rule origin should never be ahead; when it is, Scott runs `! git -C ~/dev/madden pull` himself.
 - The repo root stays writable. It was left writable so `git fetch` would work, and fetch does not work in the sandbox (Known defect below). A file created there could shadow a module the engine imports. That takes deliberate sabotage rather than drift.
 
@@ -152,12 +152,17 @@ The exact rules live in `.claude/settings.json` and `run.py`; this table says wh
 
 **Shell mode (`!`) carries `CLAUDECODE=1` but not the sandbox, verified 2026-09-11.** `! python -m madden.run` ran with `params.yaml` writable and the engine input guard refused it, naming the file. `!` is Scott's own shell and not a path the operator can take, because the model cannot type `!`. What it means is that a board produced that way would carry none of the guardrails in the may-not table above, and the input guard is the only thing that stops one being produced at all.
 
-**Known defect, found 2026-09-11 at install check step 4: no prompt appeared for a file write outside the repo.** Not fixed; no fix designed.
-- What was run: a `Write` creating a new file outside `~/dev/madden`, then an `Edit` to that same file. Scott saw no prompt for either.
-- The rule names `Edit`. `Write` is a separate tool and may not be covered, which would leave creating a file anywhere, `madden/` included, ungated: the sandbox `denyWrite` stops Bash and every subprocess it starts, not Claude's file tools.
-- That explanation is incomplete on its own, because the `Edit` did not prompt either and `Edit` is the tool the rule names. The cause is not established.
-- Confounds not controlled: the file was in the session's scratchpad directory, which the harness may exempt from prompts, and the permission mode in force was not recorded. A clean test writes and edits a file outside both the repo and the scratchpad, with the mode stated.
-- Until this is settled, the second row of the may-not table and the Costs accepted bullet "Every file write in a session started in `~/dev/madden` asks Scott" are both unproven. The write controls known to hold are the sandbox `denyWrite`, which covers Bash only (step 3), and the engine input guard (steps 7 and 8).
+**Auto mode routes file work through Bash, verified 2026-09-11. That is an instruction, not a control.** In auto mode the harness tells the model to read with `cat` and `sed -n`, search with `grep`, and change files with `sed` or heredocs, rather than use Claude's file tools. Every write taking that route lands inside the sandbox, where `denyWrite` holds. That is the whole reason the file-tool gap recorded below never surfaced in normal use: **the ungated path is the one the model is told not to take, and nothing enforces the telling.** The model may reach for `Write` or `Edit` at any moment — following a skill, mirroring a file outside the repo, or being asked to — and the retest below is what that looks like. This routing is not to be counted as a write control anywhere in this spec, and it does not narrow the defect below.
+
+**Known defect, confirmed 2026-09-11 by controlled retest: `ask` on `Edit(//**)` does not gate Claude's file tools at all.** Not fixed; no fix designed. This supersedes the step 4 note; both of that note's confounds are now eliminated and the finding is no longer "unproven" but disproven.
+
+- **Mode: auto**, set by Scott and stated before the first probe. No `.claude/settings.local.json` existed before, during or after the run, checked between probes, so no allow rule was in play and no prompt was answered with "don't ask again".
+- **Four probes, no prompt on any of them**, each reported by Scott at the time: `Write` then `Edit` on a new file at the repo root, `~/dev/madden/permcheck.txt`; then `Write` then `Edit` on a new file at `~/permcheck.txt`. All four writes landed on disk and were read back.
+- Probes 1 and 2 kill both confounds at once: the file was inside the working directory and outside the scratchpad, and `Edit` is the tool the rule names by name. The rule does not fire where it is most clearly meant to.
+- **Control, same session, same minute:** `echo > ~/permcheck-bash.txt` from Bash was refused — `operation not permitted` — and created nothing, while the `Write` tool had just created `~/permcheck.txt` at the neighbouring path. Claude's file tools sit outside the sandbox filesystem rules **entirely**, not merely outside `denyWrite`. The sandbox `allowOnly` list does not bind them either.
+- **Cause still not established.** The leading candidate is the pattern itself: `//**` may match nothing as written, leaving the rule silently inert rather than absent — a rule that is present, parsed and useless. Untested, because editing `.claude/settings.json` is Scott's call, not the operator's.
+- **Consequence: as installed, the operator can create or change any file anywhere on this machine, silently, from a session started in `~/dev/madden`.** The write controls that actually hold are the sandbox `denyWrite` and network allowlist, which cover Bash and its subprocesses only, and the engine input guard. The input guard is therefore the sole remaining barrier between a session and a hand-made board, and it is now load-bearing in a way the design did not intend.
+- Why it never surfaced in normal use: auto mode routes file work through Bash, which is sandboxed. See the paragraph immediately above — that is an instruction, not a control.
 
 **Install check step 6 is unverified, 2026-09-11.** `/madden` from a session started in the vault has not been run. The engine guard refuses when the sandbox is not loaded, verified in shell mode at step 8, so a refusal is expected on that path too. Expected is not verified.
 
