@@ -50,6 +50,18 @@ ROOFS = {
     "SF": "outdoor", "TB": "outdoor", "TEN": "outdoor", "WAS": "outdoor",
 }
 
+# nflverse writes the Rams as LA; every other abbreviation matches ours. One copy, because
+# two feeds are read with it (the injury report and the schedule) and a mapping kept in two
+# places is a mapping that eventually disagrees with itself.
+NFLVERSE_ABBR = {"LA": "LAR"}
+
+
+def from_nflverse(team: str) -> str:
+    """An nflverse team abbreviation in our spelling."""
+    t = (team or "").upper()
+    return NFLVERSE_ABBR.get(t, t)
+
+
 _BY_NAME = {v.lower(): k for k, v in TEAMS.items()}
 _ALIASES = {
     "la rams": "LAR", "l.a. rams": "LAR", "rams": "LAR",

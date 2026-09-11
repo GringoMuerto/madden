@@ -35,23 +35,17 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from .net import urlopen
+from .teams import from_nflverse
 
 RELEASES = "https://github.com/nflverse/nflverse-data/releases/download"
 RELEASE_API = "https://api.github.com/repos/nflverse/nflverse-data/releases/tags"
 TIMEOUT = 30
-
-NFLVERSE_ABBR = {"LA": "LAR"}          # nflverse writes the Rams as LA
 
 UNRESOLVED_GAME_STATUS = {"questionable", "doubtful"}
 UNRESOLVED_PRACTICE = {
     "did not participate in practice": "did not practice",
     "limited participation in practice": "limited in practice",
 }
-
-
-def _team(abbr: str) -> str:
-    a = (abbr or "").upper()
-    return NFLVERSE_ABBR.get(a, a)
 
 
 @dataclass
@@ -76,6 +70,16 @@ class Report:
     depth_as_of: str = ""
     error: str = ""                                      # report fetch failed
     depth_error: str = ""
+
+    @property
+    def empty(self) -> bool:
+        """Fetched cleanly, but this season and week hold no rows at all.
+
+        The quietest failure available here. A wrong week number returns HTTP 200 and an
+        empty slice, every team then reports UNKNOWN, and without this nothing in run
+        health says why. Loud, per game and once in run health.
+        """
+        return not self.error and not self.teams
 
 
 def _http(url: str) -> bytes:
@@ -107,7 +111,7 @@ def fetch(season: int, week: int, get=None) -> tuple:
         return rep, warnings
 
     for r in rows:
-        t = _team(r.get("team", ""))
+        t = from_nflverse(r.get("team", ""))
         rep.teams.add(t)
         if (r.get("report_status") or "").strip():
             rep.final_report_out.add(t)

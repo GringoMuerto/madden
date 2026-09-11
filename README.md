@@ -19,12 +19,17 @@ six of fifteen games. That is the failure this file exists to prevent.
 pip install -r requirements.txt
 export $(grep -v '^#' .env | xargs)          # ODDS_API_KEY
 
-python -m madden.run \
-  --sheet "~/Downloads/Eustace - NFL2026w1.xlsx" \
-  --week examples/week1-2026.yaml \
-  --tranche sunday \
-  --expect 16
+python -m madden.run --tranche sunday
 ```
+
+That is the whole command. The sheet is chosen by the highest week number in its filename,
+and the season and week are worked out from the games on it, so neither needs a flag.
+
+`--week examples/week1-2026.yaml` is optional: neutral sites, blind flags and manual
+overrides. It may also declare `season:` and `week:`, which overrides the schedule lookup —
+the escape hatch for a run when nflverse cannot be reached. A declared week that disagrees
+with the schedule still wins, and says so in run health, because a leftover week file would
+otherwise reintroduce by hand the dark exposure layer this mechanism exists to prevent.
 
 Add `--offline-lines examples/week1-2026-lines.json` to run on hand-entered lines when the
 API is down or out of credits. Tranches are `thursday`, `international`, `sunday`, `all`.
@@ -55,6 +60,14 @@ erases the thing being corrected.
 
 - Sheet parser. Finds the header by its labels, never by row number. Reads the ALL CAPS
   convention as a cross-check only. Hard stops on a game-count mismatch.
+- Week resolution (`madden/schedule.py`). Season and week come from matching the sheet's
+  pairings against nflverse's published schedule — not from the filename, which the
+  operator numbers from zero (`NFL2026w0.xlsx` is NFL week 1, and the sheet's own tab says
+  `Week01`), and not from the clock, which is wrong at the week boundary. The filename week
+  is demoted to a cross-check, like ALL CAPS. A sheet matching no week, or matching two
+  equally well, is a sheet fault and halts. Nothing downstream may run on an unresolved
+  week: the injury report is keyed on it, and a wrong week fetches cleanly, returns an
+  empty slice, and reports every team UNKNOWN. That was silent until 2026-09-11.
 - Situational matrix, all four rules, with the neutral-site carve-out.
 - Market consensus from the-odds-api.com (**with hyphens**), median across books, with
   staleness read from each book's own `last_update`.
@@ -63,18 +76,28 @@ erases the thing being corrected.
 - Quarterback exposure under the board, from the official injury report via nflverse
   with depth-chart rank: names only, no points, no effect on any pick or band. The
   injury valuation was designed and cancelled; see the spec's *What actually carries
-  this system*.
+  this system*. Exposure needs no flag and cannot go dark quietly: a failed fetch, an
+  empty week, and individual teams missing from the build each raise their own run-health
+  line, and only an explicit `--no-injuries` turns the layer off.
 - Run log, run health, degrade-and-warn on every data fault.
 
 ## What is not built
 
-- **Power rating.** `power_rating.enabled: false`. The model term is zero. Until a rating
-  exists the number is the market plus the matrix and nothing else, and every run says so.
+- **Power rating.** `power_rating.enabled: false`. The model term is zero, so the number is
+  the market plus the matrix and nothing else. A run says nothing about this: it is a
+  recorded design decision, not a run-health event, and a warning that fires every single
+  week trains the reader to skim the section that carries the real ones. Run health speaks
+  only when the flag and the fact disagree — `enabled: true` with no rating built, which is
+  a config claiming a layer the engine does not have. The check keys on whether a rating
+  module exists (`run.rating_module`), never on the flag, because flipping the flag alone
+  moves no number: `make_pick`'s `model_term` defaults to 0.0 and `run.py` passes nothing.
 - **Call A**, status adjudication and model-validity verdicts. Until it exists, structural
   breaks are declared by hand in the week file's `blind:` list.
 - **Call B**, the writer. Drivers are currently generated in code from the actual inputs.
 - **Schedule feed** for venue and roof state. The week file stands in. Temperature and
   wind now come from open-meteo (`madden/weather.py`); the week file only overrides them.
+  The schedule *is* now fetched (`madden/schedule.py`), but only to resolve the week —
+  venue and roof still come from `teams.py` and the week file.
 - **Backtest harness.** Needs nflverse ingest plus the pool archive. This is what would
   re-establish the 56.9% measurement, which currently exists only as a claim in the spec
   because the sandbox that produced it was discarded.

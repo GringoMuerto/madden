@@ -21,6 +21,7 @@ import yaml
 
 from .core import make_pick, tiebreaker
 from . import injuries
+from . import schedule
 from .market import fetch_lines, fetch_scores, load_offline, soonest
 from .sheet import SheetFault, parse_sheet
 from .weather import forecast_many
@@ -51,6 +52,26 @@ def load_env(start: Path | None = None) -> None:
             if key and key not in os.environ:
                 os.environ[key] = val
         return
+
+
+def rating_module():
+    """The power rating, if one has ever been built. None today, and that is by design.
+
+    Keyed on whether a rating EXISTS, never on `power_rating.enabled`. The flag is a
+    statement of intent and the module is the fact, and only the fact decides whether the
+    model term can be anything but zero -- `make_pick`'s `model_term` defaults to 0.0 and
+    run.py passes nothing, so flipping the flag alone changes no number on the board.
+
+    That the rating is not built is a design decision recorded in the spec and the README,
+    tested once and found to make results worse. A decision is not a run-health event, so a
+    run says nothing about it. What a run does say is when the flag and the fact disagree,
+    because that is the state where the board would quietly stop matching its own config.
+    """
+    try:
+        from . import rating
+    except ImportError:
+        return None
+    return rating if hasattr(rating, "model_term") else None
 
 
 def week_of(path: Path):
@@ -254,6 +275,24 @@ def main(argv=None) -> int:
             return 3
         games = parse_sheet(str(sheet_path), expected_games=args.expect,
                             neutral_sites=neutral)
+
+        # Which week this is, worked out from the games themselves. A week file still
+        # wins, but it is now optional rather than load-bearing, and the filename is only
+        # cross-checked. An unresolved week halts: the injury report is keyed on season
+        # and week, and a wrong week fetches cleanly, returns nothing, and reports every
+        # team UNKNOWN without a single warning. See schedule.py.
+        if week.get("season") and week.get("week"):
+            resolved = schedule.Resolution(
+                season=int(week["season"]), week=int(week["week"]),
+                matched=0, total=len(games), source="week file")
+            print(f"week:  season {resolved.season} week {resolved.week}, "
+                  f"declared in {args.week}")
+            warnings.extend(schedule.confirm(resolved.season, resolved.week, games))
+        else:
+            print("resolving the week from the nflverse schedule...", flush=True)
+            resolved = schedule.resolve(games)
+            print(f"week:  {resolved}")
+            warnings.extend(schedule.filename_cross_check(resolved, wk))
     except SheetFault as exc:
         print(f"SHEET FAULT, halting: {exc}", file=sys.stderr)
         return 2
@@ -275,15 +314,22 @@ def main(argv=None) -> int:
     if args.no_injuries:
         warnings.append("injury report skipped by --no-injuries: exposure is UNKNOWN for "
                         "every game")
-    elif not (week.get("season") and week.get("week")):
-        warnings.append("the week file names no season and week, so the injury report "
-                        "cannot be matched to this slate: exposure is UNKNOWN for every game")
     else:
         print("fetching the official injury report and depth chart...", flush=True)
-        report, inj_warnings = injuries.fetch(int(week["season"]), int(week["week"]))
+        report, inj_warnings = injuries.fetch(resolved.season, resolved.week)
         warnings.extend(inj_warnings)
         if report.error:
+            # A data fault, so this degrades rather than halting, per the spec's
+            # guardrails. It is loud because the board below still looks complete.
             warnings.append(injuries.header(report))
+        elif report.empty:
+            warnings.append(
+                f"the injury report holds no rows at all for season {resolved.season} "
+                f"week {resolved.week}, so exposure is UNKNOWN for every game. nflverse "
+                f"rebuilds daily around 12:00 UTC and the league's first report of the "
+                f"week lands Wednesday, so before that this is expected. It is said out "
+                f"loud because a clean fetch of an empty week is indistinguishable from a "
+                f"clean fetch of a healthy one.")
 
     # Weather, for outdoor games with no temperature already supplied. The week file
     # always wins: a value someone entered deliberately beats a forecast.
@@ -385,11 +431,13 @@ def main(argv=None) -> int:
         print("  UNKNOWN for every game: no injury report was read (see run health)")
     else:
         print(f"  {injuries.header(report)}")
-        clear = []
+        clear, dark = [], []
         for p in picks:
             g = p.game
             names, unknown = injuries.exposure(report, g.home, g.away)
             exposure_log[f"{g.away}@{g.home}"] = {"names": names, "unknown": unknown}
+            if unknown:
+                dark.append(f"{g.away} at {g.home}")
             if not names and not unknown:
                 clear.append(f"{g.away} at {g.home}")
                 continue
@@ -404,6 +452,13 @@ def main(argv=None) -> int:
             # "In this build": the report is only as current as nflverse's last daily
             # rebuild, which can be a report behind the league's.
             print(f"  no unresolved quarterback in this build: {', '.join(clear)}")
+        if dark and not report.empty:
+            # Per-game UNKNOWNs print above, but only under the board. A reader who goes
+            # straight to run health should still learn the exposure layer has holes.
+            warnings.append(
+                f"exposure could not be resolved for {len(dark)} of {len(picks)} games "
+                f"({', '.join(dark)}): a team in each has no row in this injury build. "
+                f"Those games are UNKNOWN, not clear.")
 
     sections = handback_lines(picks)
     if sections:
@@ -423,9 +478,13 @@ def main(argv=None) -> int:
     print("\nRUN HEALTH")
     for w in dict.fromkeys(all_warnings):
         print(f"  ! {w}")
-    if params["power_rating"]["enabled"] is False:
-        print("  ! power rating layer disabled: the model term is zero, so every number here "
-              "is the market plus the situational matrix and nothing else")
+    if not all_warnings:
+        # An empty heading reads the same as a section that never ran. Say which it is.
+        print("  every input fetched, no warnings")
+    if params["power_rating"]["enabled"] and rating_module() is None:
+        print("  ! params.yaml sets power_rating.enabled: true, but no rating is built, so "
+              "the model term is still zero and the number is the market plus the matrix. "
+              "The config claims a layer the engine does not have")
 
     logdir = Path(args.log)
     logdir.mkdir(parents=True, exist_ok=True)
@@ -433,6 +492,9 @@ def main(argv=None) -> int:
     record = {
         "run": stamp, "tranche": args.tranche, "sheet": str(sheet_path),
         "sheet_week": week_of(sheet_path),
+        "season": resolved.season, "week": resolved.week,
+        "week_source": resolved.source,
+        "week_games_matched": resolved.matched, "week_games_total": resolved.total,
         "spec_version": params["spec_version"],
         "deviations": len(deviations),
         "injury_report": ({"built": report.built, "depth_as_of": report.depth_as_of,

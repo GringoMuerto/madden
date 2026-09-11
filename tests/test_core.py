@@ -493,3 +493,151 @@ def test_a_played_game_is_distinguishable_from_a_failed_fetch():
     # Same game, but with the fetch broken nothing may be claimed about it.
     assert failed_label == "fetch failed" and "line fetch failed" in failed_text
     assert len({played_label, absent_label, failed_label}) == 3
+
+
+# Which week the sheet is. Derived from the games, never from the filename (the operator
+# numbers his files from zero) and never from the clock. An unresolved week halts, because
+# the injury report is keyed on it and a wrong week goes dark without a warning.
+
+SCHEDULE_HEADER = "game_id,season,game_type,week,gameday,weekday,gametime,away_team,home_team"
+
+WEEK1 = [("NE", "SEA"), ("SF", "LA"), ("CHI", "CAR"), ("TB", "CIN"), ("NO", "DET"),
+         ("BUF", "HOU"), ("BAL", "IND"), ("CLE", "JAX"), ("ATL", "PIT"), ("NYJ", "TEN"),
+         ("ARI", "LAC"), ("MIA", "LV"), ("GB", "MIN"), ("WAS", "PHI"), ("DAL", "NYG"),
+         ("DEN", "KC")]
+# Sixteen pairings that share none of week 1's. Pairs are matched unordered, so a week
+# built by reversing week 1's home and away would be the same sixteen pairs and would tie.
+WEEK2 = [("DET", "BUF"), ("CAR", "ATL"), ("NO", "BAL"), ("MIN", "CHI"), ("SEA", "PIT"),
+         ("LA", "TEN"), ("CIN", "CLE"), ("HOU", "JAX"), ("IND", "KC"), ("NYJ", "MIA"),
+         ("LAC", "LV"), ("GB", "PHI"), ("NYG", "WAS"), ("DAL", "ARI"), ("SF", "DEN"),
+         ("NE", "TB")]
+
+
+def _schedule(weeks=None, broken=False):
+    """A fake GET returning an nflverse games.csv. weeks: {(season, week): [(away, home)]}."""
+    weeks = {(2026, 1): WEEK1, (2026, 2): WEEK2} if weeks is None else weeks
+    lines = [SCHEDULE_HEADER]
+    for (season, wk), pairs in weeks.items():
+        for i, (away, home) in enumerate(pairs):
+            lines.append(f"{season}_{wk}_{away}_{home},{season},REG,{wk},"
+                         f"2026-09-{12 + wk:02d},Sunday,13:00,{away},{home}")
+
+    def get(url):
+        if broken:
+            raise RuntimeError("HTTP Error 404")
+        return "\n".join(lines).encode()
+    return get
+
+
+def _sheet_games(pairs):
+    """The same pairings as the sheet would carry them.
+
+    The lists above are spelled the way nflverse spells them, so the Rams are LA. The
+    sheet says "Los Angeles Rams" and the parser resolves that to LAR, so the sheet side
+    of every match is exercised in our spelling, not the feed's.
+    """
+    ours = {"LA": "LAR"}
+    return [game(ours.get(away, away), ours.get(home, home), 3.5, home=ours.get(home, home))
+            for away, home in pairs]
+
+
+def test_week_comes_from_the_games_not_the_filename():
+    from madden import schedule
+    # The real sheet: filename NFL2026w0.xlsx, tab "Week01", and these sixteen games.
+    res = schedule.resolve(_sheet_games(WEEK1), get=_schedule())
+    assert (res.season, res.week) == (2026, 1)
+    assert res.matched == res.total == 16
+    assert res.source == "nflverse schedule"
+
+
+def test_the_operators_zero_indexed_filename_is_not_warned_about():
+    from madden import schedule
+    res = schedule.resolve(_sheet_games(WEEK1), get=_schedule())
+    # w0 for NFL week 1 is his habit, so it is expected, not a warning.
+    assert schedule.filename_cross_check(res, 0) == []
+    assert schedule.filename_cross_check(res, 1) == []
+    assert schedule.filename_cross_check(res, None) == []
+    # Anything else means the wrong file may have been picked up.
+    off = schedule.filename_cross_check(res, 7)
+    assert off and "NFL week 1" in off[0] and "numbers his files from zero" in off[0]
+
+
+def test_the_rams_are_matched_through_the_nflverse_spelling():
+    from madden import schedule
+    # nflverse writes the Rams as LA; the sheet writes LAR. SF at LAR must still match.
+    res = schedule.resolve(_sheet_games([("SF", "LAR")]), get=_schedule())
+    assert (res.season, res.week) == (2026, 1)
+
+
+def test_a_sheet_matching_no_week_is_a_hard_stop():
+    from madden import schedule
+    nonsense = _sheet_games([("KC", "DEN"), ("SF", "SEA"), ("NYG", "DAL"), ("MIA", "BUF")])
+    with pytest.raises(SheetFault) as exc:
+        schedule.resolve(nonsense, get=_schedule(weeks={(2026, 1): WEEK1}))
+    assert "match no week" in str(exc.value)
+
+
+def test_an_unreachable_schedule_halts_rather_than_going_dark():
+    from madden import schedule
+    with pytest.raises(SheetFault) as exc:
+        schedule.resolve(_sheet_games(WEEK1), get=_schedule(broken=True))
+    # The halt has to name the escape hatch, or a broken nflverse ends the week.
+    assert "dark exposure layer" in str(exc.value)
+    assert "--week" in str(exc.value)
+
+
+def test_an_ambiguous_week_halts_rather_than_picking_one():
+    from madden import schedule
+    twice = {(2026, 1): WEEK1, (2026, 9): WEEK1}
+    with pytest.raises(SheetFault) as exc:
+        schedule.resolve(_sheet_games(WEEK1), get=_schedule(weeks=twice))
+    assert "ambiguous" in str(exc.value)
+
+
+def test_a_stale_week_file_is_reported_rather_than_obeyed_silently():
+    from madden import schedule
+    games = _sheet_games(WEEK1)
+    assert schedule.confirm(2026, 1, games, get=_schedule()) == []
+    stale = schedule.confirm(2026, 2, games, get=_schedule())
+    assert stale and "week file wins" in stale[0] and "leftover" in stale[0]
+    # The override still has to work when nflverse is unreachable: warn, never halt.
+    offline = schedule.confirm(2026, 2, games, get=_schedule(broken=True))
+    assert offline and "could not be confirmed" in offline[0]
+
+
+def test_a_clean_fetch_of_an_empty_week_is_not_mistaken_for_a_healthy_one():
+    from madden import injuries
+    healthy, _ = injuries.fetch(2026, 1, get=_nflverse([
+        ("ATL", 1, "g-tua", "QB", "Tua Tagovailoa", "Questionable", "", "Oblique")]))
+    assert not healthy.empty
+    # The quiet failure: right URL, wrong week. HTTP 200, no rows, every team UNKNOWN.
+    wrong_week, _ = injuries.fetch(2026, 1, get=_nflverse([
+        ("ATL", 5, "g-tua", "QB", "Tua Tagovailoa", "Questionable", "", "Oblique")]))
+    assert wrong_week.empty and not wrong_week.error
+    assert injuries.exposure(wrong_week, "PIT", "ATL") == ([], ["ATL", "PIT"])
+    # A failed fetch is a different state and must stay distinguishable from an empty one.
+    broken, _ = injuries.fetch(2026, 1, get=_nflverse([], broken=("injuries_2026.csv",)))
+    assert broken.error and not broken.empty
+
+
+# The power rating. Not built, by design, and a run says nothing about a design decision.
+# It speaks only when the config claims a layer the engine does not have.
+
+def test_the_run_is_silent_about_the_rating_not_being_built():
+    from madden.run import rating_module
+    assert rating_module() is None, "no rating is built; nothing should claim otherwise"
+    assert PARAMS["power_rating"]["enabled"] is False
+    # Both together are the normal state, and the normal state produces no warning.
+    assert not (PARAMS["power_rating"]["enabled"] and rating_module() is None)
+
+
+def test_the_model_term_is_zero_whatever_the_flag_says():
+    # Flipping the flag must not move a number: run.py passes no model_term and
+    # make_pick defaults it to 0.0. The flag is intent; the module is the fact.
+    import copy
+    p = copy.deepcopy(PARAMS)
+    g = game("DEN", "KC", 2.5, home="KC")
+    before = make_pick(g, 2.5, p).madden_number
+    p["power_rating"]["enabled"] = True
+    after = make_pick(g, 2.5, p).madden_number
+    assert before == after
