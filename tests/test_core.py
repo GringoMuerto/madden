@@ -5,6 +5,7 @@ so a negative adjustment favours the visitor. A previous reconstruction had this
 -3.3 with an invented 70F companion rule, and it flipped picks in six games.
 """
 
+import http.client
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -403,3 +404,25 @@ def test_no_fetcher_sends_connection_close(name, monkeypatch):
     assert sent and sent[0].startswith("GET ")
     headers = [line.lower() for line in sent[0].split("\r\n")[1:]]
     assert not any(h.startswith("connection:") for h in headers), sent[0]
+
+
+@pytest.mark.parametrize("exc", [
+    http.client.IncompleteRead(b'{"hourly":', 5000),
+    http.client.BadStatusLine(""),
+], ids=["incomplete-read", "bad-status-line"])
+def test_a_broken_forecast_degrades_rather_than_stopping_the_run(exc, monkeypatch):
+    """A cut-off or malformed forecast is a data fault: warn and carry on, never halt.
+
+    These are http.client.HTTPException, which is neither OSError nor ValueError, so
+    they walked straight out of forecast() and would have ended the run.
+    """
+    from madden import weather
+
+    def fail(lat, lon, timeout):
+        raise exc
+
+    monkeypatch.setattr(weather, "_fetch", fail)
+    kickoff = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
+    temps, winds, warnings = weather.forecast_many([("PIT", kickoff)])
+    assert temps == {} and winds == {}
+    assert any("no forecast for PIT" in w for w in warnings)

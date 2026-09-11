@@ -16,9 +16,9 @@ Nothing here ever guesses a temperature.
 
 from __future__ import annotations
 
+import http.client
 import json
 import time
-import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,7 +79,10 @@ def forecast(team: str, kickoff, timeout: int = 12, use_cache: bool = False):
     if payload is None:
         try:
             payload = _fetch(coords[0], coords[1], timeout)
-        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError):
+        except (OSError, ValueError, http.client.HTTPException):
+            # OSError covers URLError, HTTPError and timeouts; HTTPException covers a body
+            # cut off mid-read (IncompleteRead) and a malformed response. A forecast that
+            # cannot be fetched is a data fault: warn and carry on, never stop the run.
             return None, None
         if use_cache:          # the spec: perishable data is never written to disk
             CACHE.mkdir(exist_ok=True)
