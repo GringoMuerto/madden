@@ -1,0 +1,101 @@
+# Madden tuning parameters.
+#
+# SOURCE OF TRUTH: Knowledge/AI Systems/Agent Specs/madden.md (status: approved, revised 2026-09-10).
+# Every value below is tagged MEASURED (with its evidence) or GUESS (a starting value).
+#
+# RULE: a GUESS moves only when the scoreboard moves it, in a dated commit tied to a
+# performance shift. Never after a bad week. Never by argument.
+# RULE: nothing in this file is edited from memory. Re-read the spec first.
+
+spec_version: "2026-09-10"
+
+situational:
+  # MEASURED. nflverse 1999-2025. Fitted 1999-2012, tested untouched on 2013-2025.
+  # Benchmarked against the 49.0% home base rate, NOT 50%.
+  # Sign convention: POINTS ADDED TO THE HOME TEAM. Negative favours the visitor.
+  # Applied AFTER market regression, never before. These are measured market errors,
+  # not estimates of team strength; regressing them toward the market erases them.
+  dome_visitor_outdoors_75f:
+    points: -2.8          # MEASURED n=271, z=-3.10, replicates 40.2%/41.0% across eras
+    temp_threshold_f: 75
+  home_underdog_7plus:
+    points: 2.3           # MEASURED n=493, z=+2.57, replicates 57.3%/54.4%
+    threshold: 7.0
+  divisional:
+    points: -0.8          # MEASURED n=2,608, survives a temperature control
+  global_home_baseline:
+    points: -0.3          # MEASURED n=6,712, home teams cover 49.0%. Applies to EVERY
+                          # non-neutral game, including ones no other rule touches.
+  holdout:                # MEASURED, for reference only, not used in computation
+    all_games: 0.525      # 1,767 games
+    above_2_points: 0.559
+    above_3_points: 0.590
+
+market_regression:
+  # GUESS (the 85/75/65 schedule). Base 65/35 split is MEASURED (external, published optimum).
+  strength_trust_schedule:
+    weeks_1_4: 0.85
+    weeks_5_8: 0.75
+    weeks_9_plus: 0.65
+  blindness_weight: 0.90  # GUESS
+  # News trust OVERRIDES strength trust and is not damped by the maturity schedule.
+  # Attribution happens in code, never by letting a model see both status and movement.
+  news_override: true
+
+power_rating:
+  # NOT YET BUILT. The model term is zero until a rating exists. Do not fabricate one.
+  enabled: false
+  weight: 0.35            # MEASURED (external): published optimum is ~65% market / 35% model
+  epa_offense_weight: 1.6 # MEASURED (external)
+  epa_defense_weight: 1.0
+  point_diff_vs_efficiency_split: 0.5  # GUESS
+
+bands:
+  # Banding is by EDGE SIZE, not by a historical hit rate.
+  high_points: 3.0        # GUESS
+  medium_points: 1.5      # GUESS
+  # MEASURED: margin-minus-spread is ~normal, mean 0, SD ~13.4-13.9 (Stern 1986).
+  # Key-number frequencies: 3 ~15%, 7 ~9%, 10 ~5-6%, 14 ~4-5%. 4, 5, 8, 9 are low frequency.
+  key_numbers: [3, 7, 10, 14]
+  key_number_upgrades_to_high: true
+
+tiebreaker:
+  # Anchor on the market total, then offset deliberately. The total is the most crowded
+  # square on the board. Offset held constant all season so the log means something.
+  offset_points: 4.0      # GUESS (spec says 3-5)
+  offset_direction: down  # UNRESOLVED in the spec. Open item 3: does a sub-tie favour the
+                          # lower guess? If yes this is a rule, not a theory.
+  wind_mph_threshold: 10  # MEASURED (external): under hits ~54% above 10 mph
+  wind_strong_mph: 20     # MEASURED: 20+ mph is worth ~2.7 fewer points
+  apply_temperature: false  # MEASURED: temperature evidence conflicts. Flag, never adjust.
+
+venues:
+  # Roof types. "canopy" is SoFi: covered but open-sided and not climate controlled.
+  # UNRESOLVED: whether a canopy team counts as dome-based for the visitor rule, and
+  # whether a canopy game counts as outdoors. Defaults below are conservative (neither).
+  # nflverse labels SoFi inconsistently across seasons. Settle this before trusting any
+  # LAR or LAC road game that would otherwise trigger the 75F rule.
+  canopy_is_dome_based: false
+  canopy_is_outdoors: false
+  # Retractable roofs are treated as indoors unless a week override says the roof was open.
+  retractable_default_open: false
+
+guardrails:
+  call_a_fetch_budget: 12   # GUESS
+  call_b_tool_budget: 0
+  halt_only_on_sheet_fault: true
+  never_fabricate_a_missing_line: true
+
+odds_api:
+  # The real vendor is the-odds-api.com (WITH hyphens). The no-hyphen lookalike registered
+  # in 2024 is an unauthorised reseller. odds-api.io is a different company entirely and
+  # was cited by mistake during design.
+  base_url: "https://api.the-odds-api.com/v4"
+  sport: "americanfootball_nfl"
+  regions: "us"
+  markets: "spreads,totals"
+  odds_format: "american"
+  consensus: "median"     # GUESS. Sub-half-point differences from one book are noise;
+                          # price against a multi-book consensus.
+  # Staleness is judged from the data's own last_update timestamps, never a clock heuristic.
+  max_line_age_hours: 24  # GUESS, used only to raise a warning
