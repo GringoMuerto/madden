@@ -120,18 +120,17 @@ The weekly sequence is identical every run. Nothing about its order varies by in
 
 **Mandate:** run the engine and report exactly what it produced. When Scott digs into a game, fetch; never reason.
 **Lives at** `plugins/scott-agents/skills/madden/SKILL.md` in `GringoMuerto/claude-skills`.
-**Invoked** as `/madden` from a Claude Code session started in `~/dev/madden`. Project settings load only from the session's starting directory, so a session started anywhere else has no guardrails, and the engine refuses to run in it.
+**Invoked** as `/madden` from a Claude Code session started **anywhere**. Changed 2026-09-11 at Scott's instruction: the directory used to matter because the rules lived in the repo's project settings, which load only from the starting directory. They now live in `~/.claude/settings.json`, which loads in every session on the machine, so the engine asks whether the rules are **in force** and never where the session began. Starting in the vault, in a company folder, or in the repo are all the same run.
 
 **May:** fetch and compare `main` to `origin/main` (cannot run as installed: see Known defect below); run `python -m madden.run` with the documented flags; read any file in the repo and the run log; fetch from the three allowlisted sources in a follow-up; report the engine's output.
 
 | May not | Enforced by |
 |---|---|
 | Change engine code, parameters, tests, spec, README, week or example files, sheets, `.env` | Sandbox `denyWrite` in `.claude/settings.json`, which blocks Bash and every subprocess it starts |
-| Write any file with Claude's file tools, anywhere | `ask` on `["Edit", "Write"]` in `.claude/settings.json`. Prompts on both tools, inside the repo and outside it, verified by four probes 2026-09-11. The only control that binds these tools, which sit outside the sandbox filesystem rules entirely: see the fixed defect below |
-| Produce a pick, line, band or driver by any route but the engine, including a hand-made sheet, params, week or lines file | Engine input guard in `run.py`: under Claude Code the engine refuses if any input file is writable by the running process. `--cache` refused under Claude Code |
-| Run in a session where the guardrails did not load | The same guard: without the sandbox `params.yaml` is writable, so the engine refuses. `failIfUnavailable` refuses to start a session whose sandbox cannot |
-| Reach any host but the-odds-api, nflverse on GitHub, open-meteo | Sandbox network allowlist; `strictAllowlist` in Scott's user settings makes an off-list host a denial rather than an auto-mode classifier decision |
-| Use WebSearch or WebFetch | `deny` rules |
+| Write any engine file with Claude's file tools | **Nothing, as far as this spec can currently claim.** `ask` on `Edit(//Users/gringomuerto/dev/madden/**)` and `Edit(~/dev/madden/**)` sits in **user** settings, where it would bind in every session rather than one — but it is **unverified**, and a path pattern in this project has been inert before. See the scoping note below for the status and the four-probe sequence that settles it. Until then, treat the engine input guard as the only barrier |
+| Produce a pick, line, band or driver by any route but the engine, including a hand-made sheet, params, week or lines file | Engine input guard in `run.py`, second check: under Claude Code the engine refuses if any input file is writable by the running process. This is what catches a file made in this session and handed to `--sheet`. `--cache` refused under Claude Code |
+| Run in a session where the guardrails are not in force | Engine input guard in `run.py`, which asks four questions in order and refuses on the first failure: is `SANDBOX_RUNTIME` set; does `~/.claude/settings.json` declare `denyWrite` over the engine, `strictAllowlist`, and an `Edit(...)` rule covering the repo; is every input unwritable by this process; is an off-list host actually refused. **Where the session started is not one of them.** Two of the four read configuration and two are behavioural, and the two are the ones that prove rather than assume. Two further conditions warn instead — settings newer than the session, and a probe with no verdict. `failIfUnavailable` refuses to start a session whose sandbox cannot |
+| Reach any host outside the machine-wide allowlist | Sandbox network allowlist; `strictAllowlist` in Scott's user settings makes an off-list host a denial rather than an auto-mode classifier decision. The list is no longer Madden's three sources — see *The allowlist is machine-wide* below |
 | Retry a blocked command outside the sandbox | `allowUnsandboxedCommands: false` |
 
 The exact rules live in `.claude/settings.json` and `run.py`; this table says what each is for and does not restate them.
@@ -142,6 +141,40 @@ The exact rules live in `.claude/settings.json` and `run.py`; this table says wh
 - Every file write in a session started in `~/dev/madden` asks Scott, maintenance included, and including Claude's own memory and plan writes there. This is the gate on engine changes. **In place from 2026-09-11**, when the inert pattern recorded below was replaced. It was absent in effect from install until that date, so the cost was paid for nothing for as long as the rule was inert.
 - `git pull` cannot update engine files from inside the sandbox. Under the sole-writer rule origin should never be ahead; when it is, Scott runs `! git -C ~/dev/madden pull` himself.
 - The repo root stays writable. It was left writable so `git fetch` would work, and fetch does not work in the sandbox (Known defect below). A file created there could shadow a module the engine imports. That takes deliberate sabotage rather than drift.
+
+**Decided 2026-09-11: the rules move to user settings and `/madden` runs from any directory.** Scott's instruction, and the reason is his: *"this still requires me to start in `~/dev/madden`, which is the one thing I told you I never want to worry about."* Project settings load only from the starting directory, which is what made the directory load-bearing; user settings load in every session on the machine, which is what makes it not. The guard was rewritten the same day to ask whether the rules are in force rather than where the session began.
+
+**The allowlist is machine-wide, and it is no longer Madden's three sources.** When the five-domain list was set at user scope it applied to every session on the machine, and the collateral was measured rather than guessed:
+
+- **It broke Leo outright.** Flathead's `run.py` drives the twelve-agent crew by piping prompts into the `claude` CLI as a subprocess, which inherits the sandbox. With `api.anthropic.com` off the list the CLI returned `Failed to authenticate. API Error: 403 Connection blocked by network allowlist` and every crew run failed at the first agent call. Fixed by adding the host; re-running the identical check returned `ok`.
+- **`mcp-proxy.anthropic.com` was found the same way** and added. Without it a crew agent launched through `claude -p` cannot reach any MCP connector, which several Flathead tools depend on. **This host was added beyond the list Scott enumerated**, on the evidence of the denial, and is recorded here so the addition is visible rather than silent.
+- Also added: `pypi.org`, `registry.npmjs.org`, `api.census.gov`, `api.bls.gov`, `data.bls.gov`, `api.airtable.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com`. Fifteen hosts in total.
+- **Blast radius, established by probe:** the allowlist governs Bash egress only. MCP connectors are unaffected — a Google Drive call returned a query-syntax error, not a denial. WebSearch and WebFetch are unaffected; they are tools served by Anthropic's backend, not Bash. Shell mode (`!`) carries no sandbox at all.
+- **`example.com` must stay off the allowlist forever.** The engine probes it on every run to check the allowlist is actually in force. Allowlisting it would turn that probe into a permanent false pass.
+- **`files.pythonhosted.org` added 2026-09-11** on Scott's instruction, after it was flagged: `pypi.org` alone resolves the index but not the packages, and `pip install` fails without it. Both return 200. Sixteen hosts in total.
+
+**Decided 2026-09-11: a settings file newer than the session warns, it does not refuse.** Scott's call, against the author's first implementation. The check exists because a session reads the rules when it starts and an edit afterwards can leave the file and the session disagreeing — the mechanism behind the false step 6 entry. But the evidence points the other way: the sandbox was seen hot-reloading its network policy mid-session that evening, `api.anthropic.com` going from blocked to reachable with no restart, so the divergence may not occur at all. Refusing would have cost a certain thing — a board blocked on a Sunday morning by a settings edit made an hour earlier — to protect against a speculative one. It prints under run health, under its own gate row, so the condition is never silent and a board produced in that state says so on its face.
+
+**Decided 2026-09-11: the `deny` on WebSearch and WebFetch is dropped.** It could not go to user settings without breaking the work that pays for this machine — 1,428 WebSearch and 560 WebFetch calls in twenty-one days across 223 transcripts, almost all of them Flathead crew runs — and keeping it at project scope would have kept the starting directory load-bearing, which is the thing being removed.
+
+**What it protected, stated honestly, because the trade should be legible later: prose, not picks.** No number on the board has ever come from a search. Every figure comes out of the engine, which talks only to the three sources, and the network allowlist still stops Bash reaching a sportsbook. What the deny prevented was Madden citing a betting blog in a **follow-up** — a deep-dive answer where the temptation is to reason instead of fetch. That risk is now carried by the skill's standing rule (*every claim in a follow-up traces to something fetched in that exchange*) and by nothing else. The spec already concedes that the text of a reply cannot be permission-gated, so this rule was always a discipline aid rather than an integrity control. **If a follow-up ever cites a sports site, this decision is the reason and it gets revisited.**
+
+**Scoping the `ask` rule by path, and an inert pattern caught in the act.** The rule became `ask` on `Edit(//Users/gringomuerto/dev/madden/**)` and `Edit(~/dev/madden/**)` at user scope. Measured cost of the alternative: a bare `["Edit", "Write"]` at user scope would have prompted on **517 writes in twenty-one days, about twenty-five a day**, of which 346 were vault work and only 94 were the engine. Scoped by path it prompts on the 94 and nothing else.
+
+**The scoped rule is UNVERIFIED and is to be treated as inert until probed.** It was installed on 2026-09-11 and every engine write that evening went through it, but Scott was not watching for prompts and cannot say whether any fired: *"I can't say whether I saw prompts. I wasn't watching for them."* From inside a session an approved prompt and an absent prompt are indistinguishable, so the model cannot close this alone. **Until the probe below is run and its result recorded here, this spec claims no file-tool gate at all, and the engine input guard is again the sole barrier — the state the 2026-09-11 `Edit(//**)` diagnosis said was the worst of the three, because the spec reads as though a control exists.**
+
+**The four-probe sequence, to be run at the start of the next fresh session**, which is when settings are known to have loaded. Under a path-scoped rule the expectation differs by location, and both halves matter: a rule that prompts everywhere is the cost Scott rejected, and a rule that prompts nowhere is the control he thinks he has.
+
+| # | Probe | Expected |
+|---|---|---|
+| 1 | `Edit` an existing file in `~/dev/madden` | **prompts** |
+| 2 | `Write` a new file in `~/dev/madden` | **prompts** (`Edit(path)` rules cover `Write`) |
+| 3 | `Edit` an existing file outside it, in the vault | **no prompt** |
+| 4 | `Write` a new file outside it, in the vault | **no prompt** |
+
+Scott reports each result at the time, as he did for the 2026-09-11 retest; both probe files are deleted afterwards. No `settings.local.json` may exist in any scope during the run, or a "don't ask again" answer silently invalidates every probe after it. **Record the outcome here either way** — a failed probe is the more valuable result and the one this project has twice nearly missed.
+
+`Write(...)` path rules were written alongside the `Edit(...)` ones and **Claude Code rejected them out loud**: *"Write(//Users/gringomuerto/dev/madden/\*\*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(...) instead (Edit rules cover all file-editing tools)."* They were removed within the minute. This is the same failure as the `Edit(//**)` pattern that sat inert for days — a rule that matches nothing reads exactly like protection — and the only reason it cost nothing this time is that the product said so. **A path rule is not trusted here until something has said it fired.**
 
 **Known defect, found 2026-09-11 during the install check: `git fetch` does not work inside the sandbox, over either transport.** Not fixed; no fix designed.
 - SSH: the sandbox routes it through its network proxy, which refuses the connection for lack of authentication.
@@ -163,7 +196,14 @@ The exact rules live in `.claude/settings.json` and `run.py`; this table says wh
 - **Consequence, reversed.** The engine input guard is no longer the sole barrier between a session and a hand-made board; it is the second of two, which is what the design intended. The sandbox `denyWrite` and network allowlist still cover Bash and its subprocesses only.
 - **Why it never surfaced in normal use, and why that was not reassuring:** auto mode routes file work through Bash, which is sandboxed. See the paragraph immediately above — that is an instruction, not a control, and it remains one now that the gate works.
 
-**Install check step 6 verified 2026-09-11.** `/madden` was run from a session started in the vault. The engine refused: `GUARDRAIL, halting`, naming `params.yaml` writable, exit 3. Project settings load only from the session's starting directory, so the sandbox never loaded and every input stayed writable; `guard_inputs` refuses on the first writable input it checks, and `params.yaml` is first in that list, so it is the expected name in the message. Step 8 had shown the same refusal in shell mode, which carries `CLAUDECODE=1` without the sandbox. It is now confirmed on the path the operator could actually take, and the expectation recorded here until tonight is retired.
+**Install check step 6 is retired and its claim is withdrawn, 2026-09-11. The entry said a session started in the vault is refused. It is not.** Re-run the same evening from a vault-started session, `/madden` resolved the week, fetched, spent two odds-api credits and printed a board. `guard_inputs` raised nothing.
+
+- **The cause: writability stopped discriminating, machine-wide.** Scott's user-scope `~/.claude/settings.json` carries its own `denyWrite` over `~/dev/madden` and the sheets folder. User settings load in **every** session on this machine, so the engine's inputs are read-only from a session that loaded no project settings at all. The guard inferred *guardrails loaded* from *inputs are read-only*, and that inference is now false everywhere rather than in one place.
+- **The entry was almost certainly an honest observation of a session that no longer exists.** The user-scope file's mtime is 17:37 on 2026-09-11; the commit recording step 6 is 19:20. Settings load when a session starts, so a vault session opened before 17:37 would still have had writable inputs and would genuinely have refused. **What that makes this is worse than a wrong fact: a control that passed its test and stopped working about ninety minutes later, with nobody touching it and nothing saying so.** Not verified to that specific session — the transcript was not identified — and it is recorded as the likely reading, not a finding.
+- **The general lesson, which is the part that transfers.** The check was reading a *side effect* of the thing it cared about. Side effects have other causes. A guard must key on a positive signal of the condition itself, and must fail closed when it cannot read one.
+- **Replaced, same day**, by the transcript-location check in the may-not table above. It answers *did `~/dev/madden/.claude/settings.json` load* by asking where this session started, which is what determines the answer. Verified live on 2026-09-11 in three states: a vault-started session refuses and names the vault; a real `~/dev/madden`-started session passes; a hand-made sheet under `$TMPDIR` still trips the second check. Pinned by `test_guard_refuses_a_session_started_somewhere_else`, which is this regression written as a test.
+- **Superseded the same evening.** The transcript-location check was correct and lasted about an hour. It answered *did the project settings load* by requiring the session to have started in `~/dev/madden` — which made the starting directory load-bearing, the very thing Scott then removed. The transcript lookup survives in `session_transcript()`, no longer as a gate but to date the session for the staleness check. **Both the original entry and its first replacement failed the same way: they asked where something came from instead of whether it is true now.**
+- **What it still does not prove.** `CLAUDE_CODE_SESSION_ID` is an environment variable and the transcript path is Claude Code's internal layout. Someone determined to fake a loaded session can set the variable, and a future version of Claude Code can move the transcripts. The first is deliberate sabotage, in the same class as the writable repo root already accepted. The second fails closed and shows up as a refusal on a Sunday morning, which is the right way round: **this check is written to be rewritten, never disabled.**
 
 ---
 
@@ -338,7 +378,8 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 | Unresolved status | Sunday run, meaningful player still questionable on a later-window game | Which player, which way the line moved, the pick either way | Notify | Pick stands |
 | Silence | No run by the tranche deadline | Alert | Notify | Games revert to favorite |
 | Engine change | Any file write in a session started in `~/dev/madden` | The file and the change | Approve or reject | The write does not happen |
-| Guardrails not loaded | Engine run where an input is writable, or `--cache` under Claude Code | The refusal, naming the input | Halt | No picks |
+| Guardrails not in force | Sandbox not running, a required rule not declared, an input writable, an off-list host reachable, or `--cache` under Claude Code | The refusal, naming which of the four failed | Halt | No picks |
+| Guardrails unconfirmed | Settings newer than this session, or an allowlist probe with no verdict | The condition, under run health | Notify | **Picks stand** |
 
 **No cap on handbacks (Scott's decision, overruling a recommended cap of three).** He hands back as many games as he lacks the perspective to pick, each with an explanation and a lean. **Tradeoff recorded:** the trigger gets a defined threshold rather than being left to the model's sense of its own uncertainty, and the weekly handback count is logged. If it averages high, the threshold is miscalibrated and the threshold is what gets fixed.
 
@@ -379,6 +420,7 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 - No halting spend ceiling. Two model calls against sixteen games is not a cost story.
 - Degrade and warn, never stop, on data faults. Halt only on sheet fault.
 - Madden never submits, never contacts, never publishes.
+- **No copy of the repo carries `.env`.** A recursive copy of `~/dev/madden` takes `ODDS_API_KEY` with it — `tar`, `cp -r` and `rsync` all do — and a copy in a scratch directory is outside everything that protects the original: `.gitignore` does not reach it, the sandbox's read-deny on `**/.env*` does not stop a copy being made, and nothing sweeps it afterwards. **Seven such copies were found on 2026-09-11**, in `$TMPDIR`, the oldest over an hour old, spanning at least four sessions and two of them made that evening while fixing a different defect. The habit that prevents it: `tar --exclude=.env`, or copy the files you need rather than the tree, then `find <dir> -name '.env*'` before leaving the copy behind. This is its own rule because the one below, about where the key lives, is silent about copies and was read as covering them.
 - Operator enforcement: see Architecture decision → Operator skill.
 
 ---
@@ -391,6 +433,10 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 - Weekly handback count, tracked for threshold drift.
 - Deviation-from-favorite count per run.
 - API quota remaining, read from `x-requests-remaining`.
+
+**Known defect, found and fixed 2026-09-11: a log write that could not land took the whole run down.** `path.write_text` was unwrapped, so a `PermissionError` from a sandbox that did not allow writes to `logs/` raised an unhandled traceback and exited 1 — **after** the board had printed, correct and complete, to stdout. The run therefore produced a usable board and no record of it, which is the one combination the observability section exists to prevent: every figure Madden reports in prose is checkable only against the log it cites.
+
+Fixed by degrading like any other data fault. The log is now built and written **before** run health prints, so its own failure can appear there as a named line; a failed write exits 4 and the board prints `NOT LOGGED` in place of the log path. The log record itself is unchanged, field for field. Its own failure is the single warning the log can never carry.
 
 ---
 
@@ -419,10 +465,10 @@ The scoreboard is nearly free: every pick resolves within days against unambiguo
 
 ## Runtime
 
-Git-backed local project, run through Claude Code on the MacBook, invoked manually by Scott. Not a scheduled local task pointed at the vault (prohibited by `CLAUDE.md`; **confirm the exact rule there before implementation — not yet done**).
+Git-backed local project, run through Claude Code on the MacBook, invoked manually by Scott **from any directory** (changed 2026-09-11; see Operator skill). Not a scheduled local task pointed at the vault (prohibited by `CLAUDE.md`; **confirm the exact rule there before implementation — not yet done**).
 
 - Repo: `~/dev/madden`, git-initialised.
-- `ODDS_API_KEY` in `.env`, excluded by `.gitignore`. Never in the vault, never in a repo, never in a conversation. **Verified working 2026-09-10** — authenticated call returned `x-requests-last: 1`.
+- `ODDS_API_KEY` in `.env`, excluded by `.gitignore`. Never in the vault, never in a repo, never in a conversation, and **never in a copy of the repo** — see Guardrails. **Verified working 2026-09-10** — authenticated call returned `x-requests-last: 1`.
 - Tuning parameters in version-controlled config in the same repo.
 
 | Run | When (Central) | Covers | Notes |

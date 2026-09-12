@@ -138,3 +138,39 @@ def test_health_never_reaches_the_pick_arithmetic():
     core = (pathlib.Path(__file__).resolve().parents[1] / "madden" / "core.py").read_text()
     assert "health" not in core
     assert "injur" not in core.lower()
+
+
+def test_a_blocked_log_write_is_a_run_health_line_not_a_traceback(tmp_path):
+    """2026-09-11: an unhandled PermissionError took the run down after the board had
+    printed, exiting 1 with a traceback and leaving no log. A write that cannot land
+    degrades and warns like any other data fault."""
+    import argparse
+    from madden import run as run_mod
+
+    blocked = tmp_path / "logs"
+    blocked.mkdir()
+    blocked.chmod(0o555)
+    args = argparse.Namespace(log=str(blocked), tranche="sunday", cache=False)
+    resolved = run_mod.schedule.Resolution(season=2026, week=1, matched=16, total=16,
+                                           source="nflverse")
+    path, problem = run_mod.write_log(
+        args, {"spec_version": "2026-09-11"}, tmp_path / "sheet.xlsx", resolved,
+        None, {}, {}, {}, {}, [], [], ["an earlier warning"])
+    assert path is None
+    assert problem is not None
+    assert "could not be written" in problem
+    blocked.chmod(0o755)
+
+
+def test_a_log_write_that_lands_returns_its_path(tmp_path):
+    import argparse, json
+    from madden import run as run_mod
+
+    args = argparse.Namespace(log=str(tmp_path / "logs"), tranche="sunday", cache=False)
+    resolved = run_mod.schedule.Resolution(season=2026, week=1, matched=16, total=16,
+                                           source="nflverse")
+    path, problem = run_mod.write_log(
+        args, {"spec_version": "2026-09-11"}, tmp_path / "sheet.xlsx", resolved,
+        None, {}, {}, {}, {}, [], [], ["an earlier warning"])
+    assert problem is None
+    assert json.loads(path.read_text())["warnings"] == ["an earlier warning"]

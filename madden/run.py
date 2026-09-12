@@ -14,6 +14,8 @@ import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -149,28 +151,201 @@ def load_yaml(path):
         return yaml.safe_load(fh)
 
 
-def guard_inputs(paths, cache: bool) -> str | None:
-    """Under Claude Code, refuse any input this process could have written.
+PROJECTS = Path.home() / ".claude" / "projects"
+SETTINGS = Path.home() / ".claude" / "settings.json"
+OFF_LIST_HOST = "example.com"   # reserved for documentation; must never be allowlisted
 
-    The sandbox makes the engine, parameters, week files and sheets read-only to
-    anything Claude runs. A writable input means the session started outside
-    ~/dev/madden and the sandbox never loaded, or the file was made in this session.
-    Either way the board would not be the engine's own.
+
+def project_dir_name(path: Path) -> str:
+    """Claude Code's own name for a starting directory under ~/.claude/projects:
+    every character that is not a letter or a digit becomes a hyphen. Verified
+    2026-09-11 against the directories on this machine."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def session_transcript() -> Path | None:
+    """This session's transcript, wherever the session was started.
+
+    WHERE IT STARTED NO LONGER GATES ANYTHING. Until 2026-09-11 the guard required
+    the session to have started in ~/dev/madden, because that was the only directory
+    whose project settings carried the rules. The rules now live in user settings and
+    load in every session, so the engine runs from anywhere and this function exists
+    only to date the session for the staleness check below.
+    """
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid or not re.fullmatch(r"[A-Za-z0-9._-]{8,64}", sid):
+        return None
+    if not PROJECTS.is_dir():
+        return None
+    hits = sorted(PROJECTS.glob(f"*/{sid}.jsonl"))
+    return hits[0] if hits else None
+
+
+def settings_newer_than_session() -> str | None:
+    """Warn when ~/.claude/settings.json was written after this session started.
+
+    A session reads the rules when it starts. Edit them afterwards and what the file
+    says and what the session enforces can disagree, with the file looking correct.
+    That is how the install-check step 6 claim came to be false: it recorded a refusal
+    that a later session, with newer rules, no longer produced.
+
+    A WARNING, NOT A REFUSAL. Scott's call, 2026-09-11, and the evidence is on his
+    side: the sandbox was seen hot-reloading its network policy mid-session that
+    evening -- api.anthropic.com went from blocked to reachable with no restart -- so
+    the divergence this check assumes may not happen at all. Blocking a Sunday-morning
+    board on a settings edit made an hour earlier is a certain cost against a
+    speculative one. It prints under run health so the condition is never silent.
+    """
+    t = session_transcript()
+    if t is None:
+        return ("this session cannot be located under ~/.claude/projects, so the rules "
+                "it started with cannot be dated against the settings file")
+    if not SETTINGS.is_file():
+        return f"{SETTINGS} does not exist, so there are no user-scope rules to load"
+    st = t.stat()
+    born = getattr(st, "st_birthtime", st.st_ctime)
+    changed = SETTINGS.stat().st_mtime
+    if changed > born:
+        return (f"{SETTINGS} was written at {datetime.fromtimestamp(changed):%H:%M:%S} "
+                f"and this session started at {datetime.fromtimestamp(born):%H:%M:%S}, so "
+                f"the rules on disk are not necessarily the rules this session loaded. "
+                f"A session started after that edit would load them cleanly")
+    return None
+
+
+def _rule_paths(rules) -> list[Path]:
+    """Absolute paths out of permission rules like Edit(~/dev/madden/**)."""
+    out = []
+    for r in rules or []:
+        m = re.fullmatch(r"Edit\((.+?)\)", str(r).strip())
+        if not m:
+            continue
+        raw = m.group(1)
+        raw = "/" + raw[2:] if raw.startswith("//") else raw   # // means absolute
+        raw = re.sub(r"^/+", "/", raw)   # POSIX gives a doubled leading slash its own meaning
+        raw = raw.split("*", 1)[0]
+        out.append(Path(raw).expanduser())
+    return out
+
+
+def declared_guardrails(repo: Path) -> list[str]:
+    """What ~/.claude/settings.json declares, against what a board needs.
+
+    DECLARED IS NOT IN FORCE. This reads a file; it cannot see what the running
+    session actually enforces. It is paired with the staleness check above, which
+    refuses when the file is newer than the session, and with the behavioural checks
+    in guard_inputs, which prove the filesystem rules really bind.
+    """
+    try:
+        cfg = json.loads(SETTINGS.read_text())
+    except (OSError, ValueError) as exc:
+        return [f"{SETTINGS} could not be read as JSON ({exc})"]
+
+    missing = []
+    sandbox = cfg.get("sandbox") or {}
+    if sandbox.get("enabled") is not True:
+        missing.append("sandbox.enabled is not true")
+    if sandbox.get("allowUnsandboxedCommands") is not False:
+        missing.append("sandbox.allowUnsandboxedCommands is not false")
+    if ((sandbox.get("network") or {}).get("strictAllowlist")) is not True:
+        missing.append("sandbox.network.strictAllowlist is not true")
+
+    denied = [Path(str(p)).expanduser()
+              for p in ((sandbox.get("filesystem") or {}).get("denyWrite") or [])]
+    for need in (repo / "madden", repo / "params.yaml", repo / "docs", repo / "tests"):
+        if not any(need == d or d in need.parents for d in denied):
+            missing.append(f"no sandbox denyWrite entry covers {need}")
+
+    gated = _rule_paths((cfg.get("permissions") or {}).get("ask")) + \
+        _rule_paths((cfg.get("permissions") or {}).get("deny"))
+    if not any(g == repo or g in repo.parents or repo in g.parents for g in gated):
+        missing.append(f"no permissions ask/deny Edit(...) rule covers {repo}, so "
+                       f"Claude's file tools can write the engine without asking")
+    return missing
+
+
+def allowlist_in_force(timeout: float = 3.0) -> tuple[str, str]:
+    """Probe a host that must never be allowlisted. Returns (verdict, detail).
+
+    "blocked" -- the proxy refused it, so the allowlist is doing something.
+    "open"    -- an off-list host answered, so it is not.
+    "unknown" -- neither; reported as a warning, never as a refusal, because a slow
+                 or odd network on a Sunday morning must not cost Scott his board.
+    """
+    try:
+        urllib.request.urlopen(f"https://{OFF_LIST_HOST}/", timeout=timeout)
+    except urllib.error.HTTPError:
+        return "open", f"{OFF_LIST_HOST} answered, so it is not being blocked"
+    except urllib.error.URLError as exc:
+        if "Tunnel connection failed" in str(exc) or "Forbidden" in str(exc):
+            return "blocked", f"{OFF_LIST_HOST} refused by the proxy"
+        return "unknown", f"{OFF_LIST_HOST} failed for another reason ({exc})"
+    except Exception as exc:                      # noqa: BLE001 - never fatal
+        return "unknown", f"the probe itself failed ({type(exc).__name__}: {exc})"
+    return "open", f"{OFF_LIST_HOST} was reached, so the allowlist is not in force"
+
+
+def guard_inputs(paths, cache: bool, repo: Path | None = None) -> str | None:
+    """Under Claude Code, refuse a run whose guardrails are not in force.
+
+    The question is whether the rules bind, never where the session started. Checks,
+    in order, cheapest and most certain first:
+
+    1. Is the sandbox running at all (SANDBOX_RUNTIME)?
+    2. Does the settings file declare what a board needs -- denyWrite over the
+       engine, strictAllowlist, an Edit rule gating Claude's file tools on the repo?
+    3. Do the filesystem rules actually bind? Every input this run will read must be
+       unwritable by this process. Behavioural, and the only check here that proves
+       rather than reads.
+    4. Is an off-list host actually refused? Only a positive "open" refuses; an
+       inconclusive probe is a warning (see guardrail_warnings).
+
+    Two conditions warn rather than refuse, and both print under run health: a
+    settings file newer than this session, and a probe that could not reach a verdict.
     """
     if os.environ.get("CLAUDECODE") != "1":
         return None
     if cache:
         return "--cache reads files this session can write; refused under Claude Code"
+    repo = repo or Path(__file__).resolve().parent.parent
+
+    if os.environ.get("SANDBOX_RUNTIME") != "1":
+        return ("SANDBOX_RUNTIME is not set, so this session is not running under the "
+                "sandbox and none of the filesystem or network rules bind")
+    missing = declared_guardrails(repo)
+    if missing:
+        return (f"{SETTINGS} does not declare what a board needs: "
+                + "; ".join(missing))
     for p in filter(None, paths):
         try:
             fd = os.open(p, os.O_WRONLY | os.O_APPEND)   # no O_CREAT: creates nothing
         except OSError:
             continue
         os.close(fd)
-        return (f"{p} is writable by this process: the guardrails are not loaded or the "
-                f"file was made in this session. Start Claude Code in ~/dev/madden, or run "
-                f"the engine from a terminal outside Claude Code.")
+        return (f"{p} is writable by this process: it was made in this session, or it "
+                f"sits outside the directories the sandbox protects. Either way the "
+                f"board would not be the engine's own.")
+    verdict, detail = allowlist_in_force()
+    if verdict == "open":
+        return (f"the network allowlist is declared but not in force: {detail}. The "
+                f"engine's sources are not the only hosts this session can reach")
     return None
+
+
+def guardrail_warnings(repo: Path | None = None) -> list[str]:
+    """Soft findings about the guardrails: reported under run health, never fatal."""
+    if os.environ.get("CLAUDECODE") != "1":
+        return []
+    out = []
+    stale = settings_newer_than_session()
+    if stale:
+        out.append(f"the rules may not be the ones this session loaded: {stale}. The "
+                   f"board stands; the guardrails are unconfirmed for this run")
+    verdict, detail = allowlist_in_force()
+    if verdict == "unknown":
+        out.append(f"could not confirm the network allowlist is in force: {detail}. The "
+                   f"board is unaffected; the guardrail is unverified for this run")
+    return out
 
 
 def pct(healthy: int, total: int) -> str:
@@ -281,6 +456,7 @@ def main(argv=None) -> int:
         if problem:
             print(f"GUARDRAIL, halting: {problem}", file=sys.stderr)
             return 3
+        warnings.extend(guardrail_warnings())
         games = parse_sheet(str(sheet_path), expected_games=args.expect,
                             neutral_sites=neutral)
 
@@ -537,6 +713,13 @@ def main(argv=None) -> int:
         print(f"  {tb['reason']}")
 
     all_warnings = warnings + [w for p in picks for w in p.warnings]
+
+    logged, log_error = write_log(args, params, sheet_path, resolved, report,
+                                  exposure_log, health_log, qb_log, temps, picks,
+                                  deviations, all_warnings)
+    if log_error:
+        all_warnings = all_warnings + [log_error]
+
     print("\nRUN HEALTH")
     for w in dict.fromkeys(all_warnings):
         print(f"  ! {w}")
@@ -548,9 +731,32 @@ def main(argv=None) -> int:
               "the model term is still zero and the number is the market plus the matrix. "
               "The config claims a layer the engine does not have")
 
-    logdir = Path(args.log)
-    logdir.mkdir(parents=True, exist_ok=True)
+    if logged:
+        print(f"\nlogged to {logged}")
+    else:
+        print("\nNOT LOGGED: this board has no run log, so no figure in it can be "
+              "checked against a file afterwards")
+    return 0 if logged else 4
+
+
+def write_log(args, params, sheet_path, resolved, report, exposure_log, health_log,
+              qb_log, temps, picks, deviations,
+              all_warnings) -> tuple[Path | None, str | None]:
+    """Write the run log. Returns (path, None) or (None, a run-health line).
+
+    A log write that cannot land is a data fault and degrades like any other: it is
+    named in run health and the exit code says it happened. It used to raise, which
+    took the whole run down AFTER the board had printed -- an unhandled PermissionError
+    on 2026-09-11, from a session whose sandbox did not allow writes to logs/. The
+    board was already correct and complete on stdout and the run still exited 1 with a
+    traceback under it.
+
+    The log is written BEFORE run health prints, so that its own failure can appear
+    there. Its failure is therefore the one warning the log itself can never carry.
+    """
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    logdir = Path(args.log)
+    path = logdir / f"run-{stamp}-{args.tranche}.json"
     record = {
         "run": stamp, "tranche": args.tranche, "sheet": str(sheet_path),
         "sheet_week": week_of(sheet_path),
@@ -577,10 +783,14 @@ def main(argv=None) -> int:
         } for p in picks],
         "warnings": list(dict.fromkeys(all_warnings)),
     }
-    path = logdir / f"run-{stamp}-{args.tranche}.json"
-    path.write_text(json.dumps(record, indent=2))
-    print(f"\nlogged to {path}")
-    return 0
+    try:
+        logdir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, indent=2))
+    except OSError as exc:
+        return None, (f"the run log could not be written to {path} ({exc.strerror}), so "
+                      f"this run left no record on disk and nothing printed above can be "
+                      f"checked against a file. The board itself is unaffected")
+    return path, None
 
 
 if __name__ == "__main__":

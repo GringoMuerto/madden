@@ -116,6 +116,10 @@ erases the thing being corrected.
 - Madden never submits, never contacts, never publishes.
 - `ODDS_API_KEY` lives in `.env`, which `.gitignore` excludes. Never in the vault, never in
   a repo, never in a conversation.
+- **No copy of the repo carries `.env`.** A recursive copy takes the key with it and lands it
+  somewhere nothing protects. Use `tar --exclude=.env`, or copy the files you need rather
+  than the tree, then `find <dir> -name '.env*'` before you leave the copy behind. Seven
+  copies were found sitting in scratch directories on 2026-09-11.
 - Move a GUESS only when the scoreboard moves it, in a dated commit tied to a performance
   shift. Never after a bad week.
 
