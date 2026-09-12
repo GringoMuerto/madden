@@ -163,7 +163,7 @@ The exact rules live in `.claude/settings.json` and `run.py`; this table says wh
 - **Consequence, reversed.** The engine input guard is no longer the sole barrier between a session and a hand-made board; it is the second of two, which is what the design intended. The sandbox `denyWrite` and network allowlist still cover Bash and its subprocesses only.
 - **Why it never surfaced in normal use, and why that was not reassuring:** auto mode routes file work through Bash, which is sandboxed. See the paragraph immediately above — that is an instruction, not a control, and it remains one now that the gate works.
 
-**Install check step 6 is unverified, 2026-09-11.** `/madden` from a session started in the vault has not been run. The engine guard refuses when the sandbox is not loaded, verified in shell mode at step 8, so a refusal is expected on that path too. Expected is not verified.
+**Install check step 6 verified 2026-09-11.** `/madden` was run from a session started in the vault. The engine refused: `GUARDRAIL, halting`, naming `params.yaml` writable, exit 3. Project settings load only from the session's starting directory, so the sandbox never loaded and every input stayed writable; `guard_inputs` refuses on the first writable input it checks, and `params.yaml` is first in that list, so it is the expected name in the message. Step 8 had shown the same refusal in shell mode, which carries `CLAUDECODE=1` without the sandbox. It is now confirmed on the path the operator could actually take, and the expectation recorded here until tonight is retired.
 
 ---
 
