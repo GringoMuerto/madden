@@ -19,7 +19,7 @@ supersedes: the first madden.md draft written earlier on 2026-09-10, now trashed
 
 **Inputs.** The sheet's frozen spreads; current market consensus spreads; official injury designations and inactives; opponent-adjusted efficiency metrics; schedule/venue; temperature for outdoor games.
 
-**Outputs.** A complete, submittable set of picks for the tranche being run, each with pick, drift, edge, confidence band, one-line driver, and a deviation-from-favorite flag. Plus blind games listed separately with leans and reasons. Plus the Monday night combined-score tiebreaker. Plus three display-only sections under the board -- quarterback exposure, starter health, injured quarterbacks by depth-chart rank -- none of which carries points. Plus run health.
+**Outputs.** A complete, submittable set of picks for every game on the sheet not yet kicked off, each with pick, drift, edge, confidence band, one-line driver, and a deviation-from-favorite flag. Plus blind games listed separately with leans and reasons. Plus the Monday night combined-score tiebreaker. Plus three display-only sections under the board -- quarterback exposure, starter health, injured quarterbacks by depth-chart rank -- none of which carries points. Plus run health.
 
 **Reader.** Scott only. He submits manually.
 
@@ -31,7 +31,7 @@ supersedes: the first madden.md draft written earlier on 2026-09-10, now trashed
 - **Two prizes: weekly ($220/wk × 18 = $3,960) and season ($505/$303/$202 = $1,010).** Weekly is 78% of the pot. Scott's stated priority is the season; the money says weekly. **Neither matters, because one strategy maximises both** (see Objective).
 - Field: 51-59 players across the archived seasons.
 - Deadlines are **per game, before each game's own kickoff**. Complete sheets are not required.
-- Scott submits in **two tranches by choice**: Thursday (TNF) and Sunday morning (everything else). A third early tranche only when an international game kicks before the Sunday window. **This is his fairness decision regarding the league operator and is not to be re-argued**, even though it costs the inactives on ~6-7 games a week.
+- **Scott submits whenever it suits him (his decision, 2026-09-24)**, often Friday or Saturday when he will not be at his computer Sunday morning. So every run prices every game on the sheet not yet kicked off, with the freshest data available at that moment; a later run is better informed and may pick differently. Until 2026-09-24 he submitted in two fixed tranches (Thursday night, Sunday morning), which cost the inactives on ~6-7 games a week.
 - **The operator always publishes half-point spreads**, never whole numbers, to prevent pushes.
 - **Unpicked games revert to the favorite.** So the do-nothing baseline is "take every favorite," not "no pick."
 - Sheet layout: col E favorite, col G favorite W-L, col J spread, col M underdog W-L, col O underdog; headers on row 10; picks marked with an "X"; **home team in ALL CAPS**; games grouped under day headings that vary week to week (Wednesday/Thursday/Saturday/Sunday/Monday).
@@ -68,9 +68,9 @@ The drift term carries the system. The power rating is not built. If it is ever 
 
 Three sections print beneath every board. The first was built on 2026-09-10; the
 second and third were added on 2026-09-11 at Scott's request. **None of them is a price.** Each attaches no points and cannot move a pick, a
-band, an edge or the tiebreaker; each is there because Scott submits everything Sunday
-morning by choice, which leaves six or seven games a week picked with a designation open,
-and these say where to look before he submits.
+band, an edge or the tiebreaker; each is there because Scott often submits before every
+designation has resolved (Friday, Saturday or Sunday, as suits him), which leaves games picked
+with a designation open, and these say where to look before he submits.
 
 | Section | Covers | Included when |
 |---|---|---|
@@ -126,7 +126,7 @@ Scott, 2026-09-23: *"I want to strip Madden down to be a regular agent and have 
 **Lives at** `plugins/scott-agents/skills/madden/SKILL.md` in `GringoMuerto/claude-skills`.
 **Invoked** as `/madden` by Scott, from a Claude Code session started **anywhere**, or from Cowork. `disable-model-invocation: true`: loading the skill runs the engine and spends odds-API credits, so only Scott starts it.
 
-**The engine runs as the skill loads,** before the model reads a word. A load-time command runs `scripts/run_engine.py`, which runs `python3 -m madden.run` in the vault's `Apps/madden` with no flags (so `--tranche auto`), prints the engine's full output and exit code, allows 100 seconds, and always exits 0 so that the engine's refusals reach the model as text. While the skill is active the model holds no shell and no editing tool (`disallowed-tools: Bash Edit Write NotebookEdit`); it reads the output and reports it. `WebFetch` stays for follow-ups. The restriction clears on Scott's next message, so follow-up turns have normal tools, and the engine's own checks below are what stop a follow-up turn producing a board.
+**The engine runs as the skill loads,** before the model reads a word. A load-time command runs `scripts/run_engine.py`, which runs `python3 -m madden.run` in the vault's `Apps/madden` with no flags (so every game not yet kicked off), prints the engine's full output and exit code, allows 100 seconds, and always exits 0 so that the engine's refusals reach the model as text. While the skill is active the model holds no shell and no editing tool (`disallowed-tools: Bash Edit Write NotebookEdit`); it reads the output and reports it. `WebFetch` stays for follow-ups. The restriction clears on Scott's next message, so follow-up turns have normal tools, and the engine's own checks below are what stop a follow-up turn producing a board.
 
 **A non-default run** (another tranche, `--sheet-week`, `--expect`, `--week`) is Scott's own: `! python3 "<Scott's Second Brain>/Apps/madden/madden/run.py" <flags>`, and the operator reports that output.
 
@@ -149,7 +149,7 @@ Scott, 2026-09-23: *"I want to strip Madden down to be a regular agent and have 
 | Produce a submittable board from cached forecasts | `--cache` refused under Claude Code (`CLAUDECODE=1`) |
 | Write any engine file with Claude's file tools | `ask` on `Edit(//Users/gringomuerto/Library/CloudStorage/GoogleDrive-cseustace@gmail.com/My Drive/Scott's Second Brain/Apps/madden/**)` and its `~/` form in `~/.claude/settings.json` (the `~/dev/madden` rules until 2026-09-24), from any session. Verified live 2026-09-11 (history below) |
 
-**Left in prose deliberately.** Presenting the engine's output unrewritten: the text of a reply cannot be permission-gated. Mitigation: every report cites the log path the engine printed, so any figure can be checked against the file. Also prose: voice, the Sunday timing note, and the follow-up rule that every claim traces to something fetched in that exchange. If a follow-up ever cites a betting site, that rule is what failed.
+**Left in prose deliberately.** Presenting the engine's output unrewritten: the text of a reply cannot be permission-gated. Mitigation: every report cites the log path the engine printed, so any figure can be checked against the file. Also prose: voice and the follow-up rule that every claim traces to something fetched in that exchange. If a follow-up ever cites a betting site, that rule is what failed.
 
 ### The engine's checks
 
@@ -167,7 +167,7 @@ They run on **every** engine run, from any shell, not only under Claude Code. Ea
 
 **Also kept:** a log write that fails degrades to exit 4 and `NOT LOGGED` (see Observability).
 
-**Tranche selection.** `--tranche` defaults to `auto`: the earliest tranche whose deadline, its first kickoff from the nflverse schedule, is still ahead. RUN HEALTH prints `TRANCHE: auto chose <name>` with the deadline, and names any tranche that has already kicked off. If every tranche on the sheet has kicked off, or no kickoff times are known, it refuses with a plain sentence (exit 3) before any odds credit is spent. `--tranche <name>` still works for Scott's own runs.
+**Which games a run prices (changed 2026-09-24).** By default every game on the sheet whose kickoff, from the nflverse schedule, is still ahead (`--tranche remaining`; `auto` means the same). RUN HEALTH prints `GAMES: every game on the sheet not yet kicked off, <n> of <total>`, names any game already under way (not priced), and gives the next kickoff. A game with no kickoff time is priced, and a warning names it. If every game has kicked off, or no kickoff times are known, it refuses with a plain sentence (exit 3) before any odds credit is spent. A run made before a batch's first kickoff covers that batch in the missed-games check. `--tranche thursday|international|sunday|all` still prices one batch for Scott's own runs. Until 2026-09-24 the default was the earliest tranche still ahead, so a Thursday run priced only Thursday night.
 
 **Runs from anywhere.** Relative paths (`--params`, `--log`, `--week`, `--offline-lines`) resolve against the repo root, not the working directory. `python3 "<Scott's Second Brain>/Apps/madden/madden/run.py"` works from any directory. `python3 -m madden.run` works from the repo or wherever the package is importable.
 
@@ -367,10 +367,10 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 | Handback | Call A flags a structural break | The game, what broke, Madden's lean and reason | Approve or override | **The lean stands in the sheet** — nothing falls through to the favorite |
 | Sheet fault | Sheet won't parse or doesn't match the slate | Request to repaste | Halt | Run does not proceed |
 | Degraded run | Fetch failure or stale data | Which input failed, which games affected, the pick with and without | Notify | Picks stand |
-| Unresolved status | Sunday run, meaningful player still questionable on a later-window game | Which player, which way the line moved, the pick either way | Notify | Pick stands |
-| Silence | No run by the tranche deadline | Alert | Notify | Games revert to favorite |
+| Unresolved status | Any run, meaningful player still questionable on a game not yet kicked off | Which player, which way the line moved, the pick either way | Notify | Pick stands |
+| Silence | A game kicks off that no run priced before its kickoff | Alert (the next run's MISSED GAMES warning) | Notify | That game reverts to the favorite |
 | Engine change | Claude's `Edit` or `Write` on any file under the vault's `Apps/madden`, from any session | The file and the change | Approve or reject | The write does not happen |
-| Engine check fails | Code here differs from GitHub's main (a file changed, missing or extra); an input file outside the repo or not on GitHub; GitHub unreachable and never checked; a sheet outside `MADDEN_SHEETS_DIR`; a host the run needs refused by the network; every tranche kicked off; or `--cache` under Claude Code | The refusal, one plain sentence naming the problem (exit 3) | Halt | No picks |
+| Engine check fails | Code here differs from GitHub's main (a file changed, missing or extra); an input file outside the repo or not on GitHub; GitHub unreachable and never checked; a sheet outside `MADDEN_SHEETS_DIR`; a host the run needs refused by the network; every game kicked off; or `--cache` under Claude Code | The refusal, one plain sentence naming the problem (exit 3) | Halt | No picks |
 | Code not checked against GitHub | GitHub's main could not be copied within 30 seconds, and the code here matches the copy saved at the last good check | `CODE NOT CHECKED AGAINST GITHUB` with that copy's time, under run health | Notify | **Picks stand** |
 
 **No cap on handbacks (Scott's decision, overruling a recommended cap of three).** He hands back as many games as he lacks the perspective to pick, each with an explanation and a lean. **Tradeoff recorded:** the trigger gets a defined threshold rather than being left to the model's sense of its own uncertainty, and the weekly handback count is logged. If it averages high, the threshold is miscalibrated and the threshold is what gets fixed.
@@ -421,7 +421,7 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 
 - Per-run log created at dispatch, human-readable, append-only.
 - Instrument: run and tranche id, inference and tool-call count per model call, tokens, duration, finish reason, error type, every fetch with source and timestamp.
-- **Alert on absence of output.** A tranche deadline passing with no run must reach Scott. The playbook names the silent stop as the most common real-world agent failure and the least instrumented, and here it costs a week of automatic favorite picks.
+- **Alert on absence of output.** A game kicking off that no run priced before its kickoff must reach Scott. The playbook names the silent stop as the most common real-world agent failure and the least instrumented, and here it costs a week of automatic favorite picks.
 - Weekly handback count, tracked for threshold drift.
 - Deviation-from-favorite count per run.
 - API quota remaining, read from `x-requests-remaining`.
@@ -440,7 +440,7 @@ The scoreboard is nearly free: every pick resolves within days against unambiguo
 
 **2025 yardstick, for grading a season, not guidance to act on** (pool lines joined to nflverse, 269 games; single season, see open item 6): always take the favorite 51.3%; market-side rule alone 53.9%; situational matrix alone 50.9%; market plus matrix 56.9%. Adding a power rating was tested once and made results worse; the test is not reproducible from this repo and the figure is withheld rather than recorded.
 
-**Track by tranche, not only in aggregate.** Thursday games carry ~2 days of drift; Sunday games ~5 plus inactives. If Madden performs materially better on Sunday games, that is direct evidence the drift thesis is what works. If the tranches perform identically, the thesis is weaker than claimed and Scott should know by midseason.
+**Track by how long before kickoff each game was priced, not only in aggregate (changed 2026-09-24, when fixed tranches ended).** A game priced two days out carries less drift and fewer resolved designations than one priced the morning of. If late-priced games grade materially better, that is direct evidence the drift thesis is what works; if they grade the same, the thesis is weaker than claimed and Scott should know by midseason. The grading code does not yet split results this way.
 
 **Shadow qualitative test.** From week one, Madden generates a qualitative opinion on every game, tags which structural-break class he thinks applies, timestamps it before kickoff, writes it to the log, and **never touches a pick with it.** Graded at season end per class. Costs nothing this season; buys the answer for next. Honest limit: the interesting subsets are small (structural breaks perhaps 20-30 a year), so this will sit at the edge of usable.
 
@@ -467,11 +467,9 @@ Git-backed local project, run through Claude Code on the MacBook or through Cowo
 | Run | When (Central) | Covers | Notes |
 |---|---|---|---|
 | Tuesday snapshot | On sheet arrival | Nothing | Captures market consensus at sheet-set time. Picks nothing, submits nothing. Establishes the true drift baseline and **finally measures whether the operator leans when he rounds** — the question four years of archives could not answer. |
-| Thursday | Thursday morning | TNF only | ~2 days of drift. Weakest-informed tranche. |
-| International | ~7:15 a.m. Sunday, only in weeks with an overseas kickoff | That game only | Inactives post 7:00 a.m. Central for an 8:30 kickoff. Overnight market is thinner; Madden should say so. |
-| Sunday main | 10:30-11:30 a.m. | Everything else, incl. late afternoon, SNF, MNF | Inactives confirmed for the noon slate only. |
+| Any run | Whenever Scott runs it, Wednesday to Sunday (changed 2026-09-24) | Every game on the sheet not yet kicked off | Freshest data at that moment; a later run is better informed. Official game statuses post Friday; inactives about 90 minutes before each kickoff (7:00 a.m. Central for an 8:30 overseas game). An overnight market is thinner. |
 
-**Known accepted cost.** Submitting everything Sunday morning means ~6-7 games a week are picked with a questionable designation unresolved (3:25 games resolve 1:55 p.m., SNF 5:50 p.m.). Partial rather than total, since the market number has usually absorbed the news. **Scott's fairness decision; not to be re-argued.** Madden flags these rather than working around it.
+**Known accepted cost.** Submitting before a game's inactives post means picking with some designations unresolved, more of them the earlier the run: on a Friday, most of the week's. Partial rather than total, since the market number has usually absorbed the news. Scott's decision, 2026-09-24. Madden flags these (the exposure list) rather than working around it.
 
 ---
 
