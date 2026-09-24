@@ -3,7 +3,7 @@
     python3 "<Scott's Second Brain>/Apps/madden/madden/run.py"   # from any directory
     python3 -m madden.run --tranche sunday       # from the repo, or with it importable
 
-The tranche defaults to auto: the earliest one whose first kickoff is still ahead.
+By default every run prices every game on the sheet that has not kicked off yet.
 The sheet is found in MADDEN_SHEETS_DIR; --sheet overrides it, but must still sit there.
 Before anything is read, the checks in guard.py must pass, or the run exits 3.
 Degrade and warn on a data fault, never stop. Halt only on a sheet fault.
@@ -41,6 +41,11 @@ from .sheet import SheetFault, parse_sheet
 from .weather import FORECAST_URL, forecast_many
 
 TRANCHES = {
+    # The default. Every game on the sheet that has not kicked off, whenever the run
+    # happens: Scott submits whenever suits him (Friday, Saturday or Sunday), not in
+    # fixed tranches, so every run prices the whole board still open. Filtered by
+    # kickoff time, not by day; see choose_remaining.
+    "remaining": None,
     "thursday": ("Wednesday", "Thursday"),
     "international": ("Saturday",),
     "sunday": ("Saturday", "Sunday", "Monday"),
@@ -258,34 +263,40 @@ def tranche_deadlines(games, kickoffs) -> dict:
 
 
 class NoTrancheLeft(Exception):
-    """--tranche auto found nothing still ahead. The message is the plain reason."""
+    """The default run found no game still ahead. The message is the plain reason."""
 
 
-def choose_tranche(games, kickoffs, now) -> tuple[str, str]:
-    """--tranche auto: the earliest tranche whose deadline is still ahead.
+def choose_remaining(games, kickoffs, now) -> tuple[list, list, str]:
+    """The default run: every game on the sheet that has not kicked off.
 
-    Returns (tranche, the run-health line saying why). The deadline is the tranche's
-    first kickoff, from tranche_deadlines, so a tranche whose first game has started is
-    skipped even if later games in it have not: its deadline has passed.
+    Returns (games to price, games already under way, the run-health line). A game with
+    no kickoff time in the schedule is priced, not dropped: nothing says it has started,
+    and a separate warning names it. Changed 2026-09-24 from "the earliest tranche still
+    ahead", which priced only Thursday night on a Thursday and left the rest of the week
+    for a Sunday-morning window Scott cannot always make.
     """
     if not kickoffs:
         raise NoTrancheLeft(
-            "no kickoff times are known for this week, so --tranche auto cannot tell which "
-            "tranche is next; name one with --tranche")
-    deadlines = tranche_deadlines(games, kickoffs)
-    ahead = sorted((d, name) for name, (d, _) in deadlines.items() if d > now)
+            "no kickoff times are known for this week, so the engine cannot tell which "
+            "games are still open; name a tranche with --tranche")
+    ahead, started = [], []
+    for g in games:
+        when = kickoffs.get(frozenset((g.home, g.away)))
+        (started if when is not None and when <= now else ahead).append(g)
     if not ahead:
         raise NoTrancheLeft(
-            "every tranche on this sheet has already kicked off, so there is nothing left "
-            "to pick; name one with --tranche to run it anyway")
-    deadline, name = ahead[0]
-    passed = sorted(n for n, (d, _) in deadlines.items() if d <= now)
-    local = deadline.astimezone().strftime("%a %Y-%m-%d %H:%M %Z")
-    why = (f"TRANCHE: auto chose {name}, the earliest tranche whose first kickoff is still "
-           f"ahead ({local})")
-    if passed:
-        why += f"; already kicked off: {', '.join(passed)}"
-    return name, why
+            "every game on this sheet has already kicked off, so there is nothing left to "
+            "pick; name a tranche with --tranche to run it anyway")
+    why = (f"GAMES: every game on the sheet not yet kicked off, {len(ahead)} of "
+           f"{len(games)}")
+    if started:
+        why += ("; already kicked off, not priced: "
+                + ", ".join(f"{g.away} at {g.home}" for g in started))
+    first = min((kickoffs[frozenset((g.home, g.away))] for g in ahead
+                 if frozenset((g.home, g.away)) in kickoffs), default=None)
+    if first is not None:
+        why += f"; next kickoff {first.astimezone().strftime('%a %Y-%m-%d %H:%M %Z')}"
+    return ahead, started, why
 
 
 def logged_runs(logdir: Path, season: int, week: int) -> list[tuple[str, datetime]]:
@@ -331,7 +342,9 @@ def missed_tranches(deadlines, runs, now) -> list[str]:
         deadline, listed = deadlines[name]
         if deadline > now:
             continue                                   # not due yet, nothing to say
-        mine = [w for t, w in runs if t in (name, "all")]
+        # A default run prices every game not yet kicked off, so one written before
+        # this tranche's first kickoff covered all of it.
+        mine = [w for t, w in runs if t in (name, "all", "remaining")]
         if any(w < deadline for w in mine):
             continue                                   # covered in time
         when = deadline.strftime("%Y-%m-%d %H:%M UTC")
@@ -423,8 +436,9 @@ def main(argv=None) -> int:
                     help="use the sheet naming this week number rather than the highest")
     ap.add_argument("--params", default="params.yaml")
     ap.add_argument("--week", help="week file: neutral sites, blind flags, overrides")
-    ap.add_argument("--tranche", default="auto", choices=["auto", *sorted(TRANCHES)],
-                    help="default auto: the earliest tranche whose first kickoff is ahead")
+    ap.add_argument("--tranche", default="remaining", choices=["auto", *sorted(TRANCHES)],
+                    help="default remaining: every game on the sheet not yet kicked off "
+                         "(auto means the same); or one tranche by name")
     ap.add_argument("--offline-lines", help="hand-entered lines instead of the API")
     ap.add_argument("--expect", type=int, help="expected game count; mismatch is a hard stop")
     ap.add_argument("--log", default="logs", help="directory for the run log")
@@ -522,12 +536,14 @@ def main(argv=None) -> int:
         print(f"SHEET FAULT, halting: {exc}", file=sys.stderr)
         return 2
 
-    if args.tranche == "auto":
+    open_games = None
+    if args.tranche in ("auto", "remaining"):
+        args.tranche = "remaining"
         try:
-            args.tranche, why = choose_tranche(games, resolved.kickoffs,
-                                               datetime.now(timezone.utc))
+            open_games, _, why = choose_remaining(games, resolved.kickoffs,
+                                                  datetime.now(timezone.utc))
         except NoTrancheLeft as exc:
-            print(f"TRANCHE, halting: {exc}", file=sys.stderr)
+            print(f"GAMES, halting: {exc}", file=sys.stderr)
             return 3
         notes.append(why)
 
@@ -540,7 +556,8 @@ def main(argv=None) -> int:
         line_fetch_failed = True
 
     days = TRANCHES[args.tranche]
-    in_tranche = [g for g in games if not days or g.day in days]
+    in_tranche = (open_games if open_games is not None
+                  else [g for g in games if not days or g.day in days])
 
     # Absence of output, which the spec names as the most common real-world agent failure
     # and the least instrumented. Computed over the WHOLE sheet, not this tranche, because
@@ -608,9 +625,7 @@ def main(argv=None) -> int:
     max_days = params["odds_api"]["max_kickoff_days"]
     market_lines: dict = {}
     picks = []
-    for g in games:
-        if days and g.day not in days:
-            continue
+    for g in in_tranche:
         ml, pair_warnings = soonest(lines, g.home, g.away)
         warnings.extend(pair_warnings)
         start = ml.starts_at() if ml else None

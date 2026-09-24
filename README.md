@@ -29,10 +29,12 @@ pointer to it, because Drive sync corrupts git databases.
 That is the whole command. `.env` (`ODDS_API_KEY`, and `MADDEN_SHEETS_DIR` relative to this
 folder, `../../Personal/NFL/OW Pick Em/26-27`, so it means the same folder on the Mac and in
 Cowork) is read from the repo
-automatically. The tranche is chosen for you: `--tranche auto`, the default, runs the
-earliest tranche whose first kickoff is still ahead, and run health says which one and why.
-If every tranche has already kicked off it refuses. `--tranche thursday|international|
-sunday|all` still picks one by hand. The sheet is chosen by the highest week number in its
+automatically. **Every run prices every game on the sheet that has not kicked off yet**,
+whenever it runs (changed 2026-09-24: Scott submits Friday, Saturday or Sunday as suits him).
+Each run fetches lines, injuries and forecasts fresh, so the board reflects that moment and
+sharpens as kickoff nears. Run health says how many games it priced, names any already under
+way (not priced), and gives the next kickoff. Once every game has kicked off it refuses.
+`--tranche thursday|international|sunday|all` still picks one batch by hand. The sheet is chosen by the highest week number in its
 filename, and the season and week are worked out from the games on it, so neither needs a
 flag.
 

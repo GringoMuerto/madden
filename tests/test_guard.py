@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from madden import guard
 from madden.guard import Refusal
-from madden.run import NoTrancheLeft, choose_tranche
+from madden.run import NoTrancheLeft, choose_remaining
 from madden.schedule import kickoff_at
 from madden.sheet import Game
 
@@ -365,7 +365,7 @@ def test_no_sheets_folder_set_refuses(tmp_path, monkeypatch):
         guard.sheet_from_folder(tmp_path / "x.xlsx")
 
 
-# ---- --tranche auto ---------------------------------------------------------------------
+# ---- the default run: every game not yet kicked off ------------------------------------
 
 def game(fav, dog, home, day):
     return Game(favorite=fav, underdog=dog, spread=3.5, day=day, nominal_home=home, row=0)
@@ -382,29 +382,45 @@ def utc(text):
     return datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
 
 
-def test_auto_picks_thursday_before_thursday_kicks_off():
-    name, why = choose_tranche(WEEK, KICKOFFS, now=utc("2026-09-23 12:00"))
-    assert name == "thursday"
-    assert why.startswith("TRANCHE: auto chose thursday")
-    assert "already kicked off" not in why
+def names(games):
+    return [f"{g.away} at {g.home}" for g in games]
 
 
-def test_auto_moves_on_to_sunday_once_thursday_has_kicked_off():
-    name, why = choose_tranche(WEEK, KICKOFFS, now=utc("2026-09-25 12:00"))
-    assert name == "sunday"
-    assert "already kicked off: thursday" in why
+def test_on_thursday_every_game_is_priced_not_just_thursday_night():
+    """Scott, 2026-09-24: every game needs to run regardless of when I run it."""
+    ahead, started, why = choose_remaining(WEEK, KICKOFFS, now=utc("2026-09-23 12:00"))
+    assert names(ahead) == ["NE at SEA", "CLE at JAX", "DEN at KC"]
+    assert started == []
+    assert why.startswith("GAMES: every game on the sheet not yet kicked off, 3 of 3")
 
 
-def test_auto_refuses_when_every_tranche_has_kicked_off():
-    """Monday night is still ahead, but the sunday tranche's deadline was Sunday's
-    first kickoff, so nothing on this sheet can still be submitted on time."""
-    with pytest.raises(NoTrancheLeft, match="every tranche on this sheet has already"):
-        choose_tranche(WEEK, KICKOFFS, now=utc("2026-09-27 18:00"))
+def test_on_friday_the_games_already_played_are_left_out_and_named():
+    ahead, started, why = choose_remaining(WEEK, KICKOFFS, now=utc("2026-09-25 12:00"))
+    assert names(ahead) == ["CLE at JAX", "DEN at KC"]
+    assert names(started) == ["NE at SEA"]
+    assert "already kicked off, not priced: NE at SEA" in why
 
 
-def test_auto_refuses_without_kickoff_times():
+def test_on_sunday_afternoon_monday_night_is_still_priced():
+    """The old default refused here: the sunday tranche's deadline had passed."""
+    ahead, _, _ = choose_remaining(WEEK, KICKOFFS, now=utc("2026-09-27 18:00"))
+    assert names(ahead) == ["DEN at KC"]
+
+
+def test_a_game_with_no_kickoff_time_is_priced_not_dropped():
+    kickoffs = {k: v for k, v in KICKOFFS.items() if k != frozenset(("JAX", "CLE"))}
+    ahead, _, _ = choose_remaining(WEEK, kickoffs, now=utc("2026-09-25 12:00"))
+    assert "CLE at JAX" in names(ahead)
+
+
+def test_refuses_once_every_game_has_kicked_off():
+    with pytest.raises(NoTrancheLeft, match="every game on this sheet has already"):
+        choose_remaining(WEEK, KICKOFFS, now=utc("2026-09-29 12:00"))
+
+
+def test_refuses_without_kickoff_times():
     with pytest.raises(NoTrancheLeft, match="no kickoff times"):
-        choose_tranche(WEEK, {}, now=utc("2026-09-23 12:00"))
+        choose_remaining(WEEK, {}, now=utc("2026-09-23 12:00"))
 
 
 # ---- runs from anywhere ---------------------------------------------------------------
@@ -464,14 +480,19 @@ def health_of(out):
     return out.split("RUN HEALTH", 1)[1]
 
 
-def test_run_health_names_the_sheet_and_the_tranche_auto_chose(a_run, capsys):
+def test_a_default_run_prices_every_open_game_and_says_so(a_run, capsys):
+    """Friday: Thursday night is over; Sunday and Monday night are both priced."""
     sheet, log = a_run
     assert run_main(log) == 0
-    health = health_of(capsys.readouterr().out)
+    out = capsys.readouterr().out
+    health = health_of(out)
     assert f"SHEET: {sheet.resolve()}, last changed" in health
-    assert "TRANCHE: auto chose sunday" in health and "already kicked off: thursday" in health
-    record = json.loads(next(log.glob("run-*-sunday.json")).read_text())
-    assert record["tranche"] == "sunday"
+    assert "GAMES: every game on the sheet not yet kicked off, 2 of 3" in health
+    assert "already kicked off, not priced: NE at SEA" in health
+    board = out.split("RUN HEALTH", 1)[0]
+    assert "CLE at JAX" in board and "DEN at KC" in board and "NE at SEA" not in board
+    record = json.loads(next(log.glob("run-*-remaining.json")).read_text())
+    assert record["tranche"] == "remaining"
     assert any(n.startswith("SHEET: ") for n in record["health_notes"])
 
 
@@ -503,24 +524,24 @@ def test_a_sheet_from_elsewhere_halts_with_exit_3(a_run, tmp_path, capsys):
     assert "not in the pick'em folder" in capsys.readouterr().err
 
 
-def test_every_tranche_kicked_off_halts_with_exit_3(a_run, monkeypatch, capsys):
+def test_every_game_kicked_off_halts_with_exit_3(a_run, monkeypatch, capsys):
     _, log = a_run
 
     class Late(datetime):
         @classmethod
         def now(cls, tz=None):
-            return utc("2026-09-27 18:00").astimezone(tz)
+            return utc("2026-09-29 12:00").astimezone(tz)
 
     monkeypatch.setattr(run_mod, "datetime", Late)
     monkeypatch.setattr(run_mod, "fetch_lines", lambda p: pytest.fail("spent a credit"))
     assert run_main(log) == 3
-    assert "every tranche on this sheet has already kicked off" in capsys.readouterr().err
+    assert "every game on this sheet has already kicked off" in capsys.readouterr().err
 
 
 def test_a_named_tranche_still_works(a_run, capsys):
     _, log = a_run
     assert run_main(log, "--tranche", "all") == 0
-    assert "TRANCHE: auto" not in capsys.readouterr().out
+    assert "GAMES: every game" not in capsys.readouterr().out
 
 
 def test_the_check_is_handed_repo_root_paths_from_another_directory(a_run, monkeypatch):

@@ -90,6 +90,21 @@ def test_an_all_tranche_run_covers_a_named_tranche():
     assert missed_tranches(d, runs, now=utc("2026-09-12 12:00")) == []
 
 
+def test_one_default_run_before_thursday_covers_every_tranche():
+    """The default run prices every game not yet kicked off, so a Wednesday run covers
+    Thursday night and Sunday alike; a Friday submission needs no Sunday rerun."""
+    d = tranche_deadlines(WEEK1, KICKOFFS)
+    runs = [("remaining", utc("2026-09-09 14:00"))]
+    assert missed_tranches(d, runs, now=utc("2026-09-15 12:00")) == []
+
+
+def test_a_default_run_after_thursday_still_misses_thursday():
+    d = tranche_deadlines(WEEK1, KICKOFFS)
+    runs = [("remaining", utc("2026-09-12 14:00"))]
+    out = missed_tranches(d, runs, now=utc("2026-09-15 12:00"))
+    assert len(out) == 1 and "thursday" in out[0]
+
+
 def test_a_run_written_after_the_deadline_does_not_cover_it():
     """Week 1 exactly. A log exists; it is not a covering run."""
     d = tranche_deadlines(WEEK1, KICKOFFS)
