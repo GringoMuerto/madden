@@ -3,11 +3,10 @@
 Weekly ATS picks for Scott's office pick'em pool. Every game on the sheet, one point each,
 no confidence weighting.
 
-**The spec is the source of truth.** It is authored in the vault, at `Knowledge/AI Systems/
-Agent Specs/madden.md`. `docs/madden-spec.md` here is the **read copy**, kept byte-identical,
-because a path into the vault is unfollowable from a session started in this project. An edit
-goes to both, identically, in the same commit. This repo implements the spec: where the code
-and the spec disagree, the spec wins and the code is wrong.
+**The spec is the source of truth, and there is one copy of it: `docs/madden-spec.md`.**
+The vault's `Knowledge/AI Systems/Agent Specs/madden.md` is a pointer here (since
+2026-09-23). This repo implements the spec: where the code and the spec disagree, the spec
+wins and the code is wrong.
 
 **Nothing here is edited from memory.** Every parameter in `params.yaml` is tagged MEASURED
 with its evidence, or GUESS with what would settle it. A reconstruction from memory in
@@ -18,14 +17,41 @@ six of fifteen games. That is the failure this file exists to prevent.
 ## Run it
 
 ```bash
-pip install -r requirements.txt
-export $(grep -v '^#' .env | xargs)          # ODDS_API_KEY
-
-python -m madden.run --tranche sunday
+pip install -r requirements.txt               # once
+python3 ~/dev/madden/madden/run.py            # from any directory
 ```
 
-That is the whole command. The sheet is chosen by the highest week number in its filename,
-and the season and week are worked out from the games on it, so neither needs a flag.
+That is the whole command. `.env` (`ODDS_API_KEY`, `MADDEN_SHEETS_DIR`) is read from the repo
+automatically. The tranche is chosen for you: `--tranche auto`, the default, runs the
+earliest tranche whose first kickoff is still ahead, and run health says which one and why.
+If every tranche has already kicked off it refuses. `--tranche thursday|international|
+sunday|all` still picks one by hand. The sheet is chosen by the highest week number in its
+filename, and the season and week are worked out from the games on it, so neither needs a
+flag.
+
+**Runs from anywhere.** Relative paths (`--params`, `--log`, `--week`, `--offline-lines`)
+mean paths in this repo, whatever directory you run from. `python3 -m madden.run` also works
+from inside the repo, or anywhere the package is importable. From `~` it is not, so use the
+path form above.
+
+### Four checks before every run
+
+The engine refuses to run, exit 3, with one plain sentence saying why, unless all four hold:
+
+1. **It matches GitHub.** It fetches from GitHub (15 seconds at most) and refuses if this
+   Mac is not on `main`, is behind GitHub, is ahead of it, or has split from it. If GitHub
+   can't be reached, it still refuses when this Mac has commits GitHub's last-known copy
+   lacks. Otherwise it runs and says `CODE NOT CHECKED AGAINST GITHUB` in run health.
+2. **Nothing is uncommitted.** Any changed, staged or new file refuses, and the first few
+   are named. Files git ignores (`.env`, `logs/`, `.cache/`, `.codex/`) don't count.
+3. **Settings, week and lines files are committed in this repo.** A `--params`, `--week` or
+   `--offline-lines` file from outside the repo, or not committed, refuses.
+4. **The sheet is from the pick'em folder.** It must be inside `MADDEN_SHEETS_DIR`. Run
+   health prints `SHEET: <full path>, last changed <time>`. The sheet is the one input
+   nobody checks the origin of, so look at that time.
+
+So after any change: commit and push, then run. `--cache` is also refused under Claude
+Code, because cached forecasts are not a submittable board.
 
 `--week examples/week1-2026.yaml` is optional: neutral sites, blind flags and manual
 overrides. It may also declare `season:` and `week:`, which overrides the schedule lookup —
@@ -34,7 +60,7 @@ with the schedule still wins, and says so in run health, because a leftover week
 otherwise reintroduce by hand the dark exposure layer this mechanism exists to prevent.
 
 Add `--offline-lines examples/week1-2026-lines.json` to run on hand-entered lines when the
-API is down or out of credits. Tranches are `thursday`, `international`, `sunday`, `all`.
+API is down or out of credits. Both files must be committed (check 3).
 
 Every run writes a JSON log to `logs/`.
 
