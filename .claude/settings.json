@@ -1,3 +1,7 @@
 {
-  "$schema": "https://json.schemastore.org/claude-code-settings.json"
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "claudeMdExcludes": [
+    "**/Scott's Second Brain/CLAUDE.md",
+    "**/Scott's Second Brain/AGENTS.md"
+  ]
 }

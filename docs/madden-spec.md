@@ -15,7 +15,7 @@ supersedes: the first madden.md draft written earlier on 2026-09-10, now trashed
 
 ## Job
 
-**Trigger.** Scott drops the week's pool sheet (.xlsx) into `OW Pick Em/26-27/` in Google Drive. Sheet arrives Tuesday, occasionally Wednesday.
+**Trigger.** Scott drops the week's pool sheet (.xlsx) into `OW Pick Em/26-27/`, kept in the vault at `Personal/NFL/` (in `My Drive/NFL` until 2026-09-24). Sheet arrives Tuesday, occasionally Wednesday.
 
 **Inputs.** The sheet's frozen spreads; current market consensus spreads; official injury designations and inactives; opponent-adjusted efficiency metrics; schedule/venue; temperature for outdoor games.
 
@@ -126,40 +126,40 @@ Scott, 2026-09-23: *"I want to strip Madden down to be a regular agent and have 
 **Lives at** `plugins/scott-agents/skills/madden/SKILL.md` in `GringoMuerto/claude-skills`.
 **Invoked** as `/madden` by Scott, from a Claude Code session started **anywhere**, or from Cowork. `disable-model-invocation: true`: loading the skill runs the engine and spends odds-API credits, so only Scott starts it.
 
-**The engine runs as the skill loads,** before the model reads a word. A load-time command runs `scripts/run_engine.py`, which runs `python3 -m madden.run` in `~/dev/madden` with no flags (so `--tranche auto`), prints the engine's full output and exit code, allows 100 seconds, and always exits 0 so that the engine's refusals reach the model as text. While the skill is active the model holds no shell and no editing tool (`disallowed-tools: Bash Edit Write NotebookEdit`); it reads the output and reports it. `WebFetch` stays for follow-ups. The restriction clears on Scott's next message, so follow-up turns have normal tools, and the engine's own checks below are what stop a follow-up turn producing a board.
+**The engine runs as the skill loads,** before the model reads a word. A load-time command runs `scripts/run_engine.py`, which runs `python3 -m madden.run` in the vault's `Apps/madden` with no flags (so `--tranche auto`), prints the engine's full output and exit code, allows 100 seconds, and always exits 0 so that the engine's refusals reach the model as text. While the skill is active the model holds no shell and no editing tool (`disallowed-tools: Bash Edit Write NotebookEdit`); it reads the output and reports it. `WebFetch` stays for follow-ups. The restriction clears on Scott's next message, so follow-up turns have normal tools, and the engine's own checks below are what stop a follow-up turn producing a board.
 
-**A non-default run** (another tranche, `--sheet-week`, `--expect`, `--week`) is Scott's own: `! cd ~/dev/madden && python3 -m madden.run <flags>`, and the operator reports that output.
+**A non-default run** (another tranche, `--sheet-week`, `--expect`, `--week`) is Scott's own: `! python3 "<Scott's Second Brain>/Apps/madden/madden/run.py" <flags>`, and the operator reports that output.
 
 **The claude.ai copy** is a separate short file, `skills/madden/claude_ai_upload.md`, packed as the upload's one `SKILL.md`. It runs the engine where it has a shell that reaches the repo (Cowork), and in a claude.ai chat with no shell it produces nothing. No engine, no picks.
 
 **Where the engine runs (changed 2026-09-24).** In Claude Code on Scott's Mac and in Cowork, the same way. Until 2026-09-24 it ran only in Claude Code. Week 3's Thursday run from Cowork showed why it could not run there: Cowork's network proxy refused `api.the-odds-api.com` (403 at the tunnel, `X-Proxy-Error: blocked-by-allowlist`), and check 1 fetched over SSH, for which Cowork has no key. That run printed a board with no lines. Running the same way in both needs:
 
 - **The same hosts reachable from both:** `github.com` and `release-assets.githubusercontent.com` (nflverse, and check 1), `api.the-odds-api.com`, `api.open-meteo.com`. Cowork reaches only hosts on its network allowlist, which is set in Cowork, not in this repo.
-- **The same GitHub access from both:** check 1 fetches over HTTPS, never with the Mac's SSH key or saved logins, which Cowork does not have. While the repo is private it uses `MADDEN_GITHUB_TOKEN` from `.env`, a read-only token for this repo only (Contents: read). A public repo needs no token.
+- **The same GitHub access from both:** check 1 takes a fresh copy of GitHub's `main` over HTTPS. The repo is public (since 2026-09-24), so neither environment needs a key, the Mac's SSH key or a saved login.
+- **The same folders from both (moved 2026-09-24):** the engine lives in the vault at `Apps/madden` and the pick'em sheets at `Personal/NFL`, so a Cowork conversation needs only Scott's Second Brain connected. Consolidation had kept `~/dev/madden` outside the vault, which is what stopped Cowork. The git database lives outside the vault at `~/git-repos/madden.git`, behind a one-line `.git` pointer, because Drive sync corrupts git databases; no run needs it. `MADDEN_SHEETS_DIR` is relative to the engine's folder, so it names the same folder wherever the vault is mounted. Madden sessions skip the vault's `CLAUDE.md` and `AGENTS.md` (`claudeMdExcludes` in the repo's `.claude/settings.json`): their read-everything-then-wait gate would stop a run.
 - **The network check** below, so a host either environment cannot reach stops the run by name instead of producing an empty board.
 
-**Not yet verified in Cowork (2026-09-24).** Three protections have been confirmed only in Claude Code on the Mac: Claude's file tools asking before editing `~/dev/madden` (set in the Mac's `~/.claude/settings.json`); `--cache` refused, which keys on `CLAUDECODE=1`; and the operator skill removing the shell while `/madden` is active. Until a Cowork session confirms each one, the engine's own checks are what stand behind a Cowork board, and these three do not.
+**Not yet verified in Cowork (2026-09-24).** Three protections have been confirmed only in Claude Code on the Mac: Claude's file tools asking before editing Madden's folder (set in the Mac's `~/.claude/settings.json`); `--cache` refused, which keys on `CLAUDECODE=1`; and the operator skill removing the shell while `/madden` is active. Until a Cowork session confirms each one, the engine's own checks are what stand behind a Cowork board, and these three do not.
 
 | May not | Enforced by |
 |---|---|
-| Produce a pick, line, band or driver by any route but the engine | While the skill is active the model has no shell, so it cannot run anything but the wrapper. After that, the engine's four checks below |
-| Produce picks from code, parameters, a week file or a lines file that is not committed and on GitHub | Engine checks 1 to 3 |
-| Produce picks from a sheet outside the pick'em folder | Engine check 4 |
+| Produce a pick, line, band or driver by any route but the engine | While the skill is active the model has no shell, so it cannot run anything but the wrapper. After that, the engine's checks below |
+| Produce picks from code, parameters, a week file or a lines file that is not committed and on GitHub | Engine checks 1 and 2 |
+| Produce picks from a sheet outside the pick'em folder | Engine check 3 |
 | Produce a submittable board from cached forecasts | `--cache` refused under Claude Code (`CLAUDECODE=1`) |
-| Write any engine file with Claude's file tools | `ask` on `Edit(//Users/gringomuerto/dev/madden/**)` and `Edit(~/dev/madden/**)` in `~/.claude/settings.json`, from any session. Verified live 2026-09-11 (history below) |
+| Write any engine file with Claude's file tools | `ask` on `Edit(//Users/gringomuerto/Library/CloudStorage/GoogleDrive-cseustace@gmail.com/My Drive/Scott's Second Brain/Apps/madden/**)` and its `~/` form in `~/.claude/settings.json` (the `~/dev/madden` rules until 2026-09-24), from any session. Verified live 2026-09-11 (history below) |
 
 **Left in prose deliberately.** Presenting the engine's output unrewritten: the text of a reply cannot be permission-gated. Mitigation: every report cites the log path the engine printed, so any figure can be checked against the file. Also prose: voice, the Sunday timing note, and the follow-up rule that every claim traces to something fetched in that exchange. If a follow-up ever cites a betting site, that rule is what failed.
 
-### The engine's four checks
+### The engine's checks
 
 They run on **every** engine run, from any shell, not only under Claude Code. Each failure prints `GUARDRAIL, halting:` and one plain sentence naming the problem, and exits 3. Code: `madden/guard.py`.
 
-1. **In step with GitHub.** A fetch of `main` from origin over HTTPS, with `MADDEN_GITHUB_TOKEN` when set and no credential helper, limited to 15 seconds, then `main` against `origin/main`. Refused: the checkout is not on `main`; this Mac is behind (the 2026-09-10 stale-checkout failure); this Mac is ahead; the two have split. **If GitHub cannot be reached,** the engine still compares against the copy of `origin/main` saved at the last successful fetch, and refuses if this Mac holds commits that copy lacks, or if that copy is itself ahead of this Mac. Otherwise it runs, and RUN HEALTH says: *"CODE NOT CHECKED AGAINST GITHUB: the engine could not reach GitHub (<git's fatal: line>), so it cannot confirm GitHub has no newer work; last successful check <time>."* When the token is missing, the reason says `MADDEN_GITHUB_TOKEN is not set in .env`. A Sunday-morning network hiccup must not cost the board, and it must not be silent either.
-2. **Nothing uncommitted.** `git status --porcelain` must be empty: nothing modified, staged, deleted, or untracked and not ignored. The refusal names the first five paths. Ignored files are exempt: `.env`, `.venv/`, `__pycache__/`, `*.pyc`, `logs/`, `.cache/`, `.DS_Store`, `sheets/*.xlsx`, `.codex/`, `.claude/settings.local.json`, `.claude/.cc-writes/`. This covers engine code, `params.yaml`, week and lines files, and a new file dropped beside the engine to shadow a module it imports.
-3. **Input files live in the repo and are committed.** `--params`, `--week` and `--offline-lines` must resolve inside the repo and be tracked by git. A path outside the repo is refused, so check 2 always covers these files. So is an untracked file in an ignored folder, which check 2 cannot see.
-4. **The sheet comes from the pick'em folder.** The sheet, chosen or passed with `--sheet`, must resolve inside `MADDEN_SHEETS_DIR`, following symlinks. An unset `MADDEN_SHEETS_DIR` is a refusal. RUN HEALTH prints `SHEET: <full path>, last changed <local time>`.
+1. **The code matches GitHub's main, file for file (rewritten 2026-09-24).** The engine takes a shallow copy of GitHub's `main` over HTTPS into a scratch folder (30 seconds at most, no key, no credential helper) and compares every file in its folder against it by git blob hash. Refused: a file changed here, missing here, or here but not on GitHub, unless GitHub's own `.gitignore` ignores it (`.env`, `logs/`, `.cache/`, `.pytest_cache/` and the rest); the refusal names the first five of each. The repo root's `.git` (a folder, or the vault's one-line pointer) is not code and is skipped. This covers what the old checks covered (behind, ahead, split, uncommitted work, a file dropped beside the engine to shadow a module; the 2026-09-10 stale-checkout failure among them) without the local git database, which Cowork cannot reach. A good check is saved to `.cache/github-main.json`. **If GitHub cannot be reached,** the same comparison runs against that saved copy, so a changed or extra file still refuses. Otherwise it runs, and RUN HEALTH says: *"CODE NOT CHECKED AGAINST GITHUB: the engine could not reach GitHub (<git's reason>), so it compared against the copy of GitHub's main saved <time> and cannot confirm GitHub has no newer work."* With no saved copy it refuses. A Sunday-morning network hiccup must not cost the board, and it must not be silent either.
+2. **Input files live in the repo and are on GitHub.** `--params`, `--week` and `--offline-lines` must resolve inside the repo and be tracked on GitHub's `main`, so check 1 covers their contents. A path outside the repo is refused, and so is a file in an ignored folder, which check 1 cannot see.
+3. **The sheet comes from the pick'em folder.** The sheet, chosen or passed with `--sheet`, must resolve inside `MADDEN_SHEETS_DIR`, following symlinks. A relative `MADDEN_SHEETS_DIR` is relative to the engine's folder (`../../Personal/NFL/OW Pick Em/26-27`), so one setting names the same folder on the Mac and in Cowork. An unset `MADDEN_SHEETS_DIR` is a refusal. RUN HEALTH prints `SHEET: <full path>, last changed <local time>`.
 
-**The network check (added 2026-09-24).** After checks 1 to 3 and before anything is fetched, the engine sends a HEAD request to one URL on every host the run will use: the nflverse schedule (which redirects to GitHub's download host), the odds API unless `--offline-lines`, open-meteo unless `--no-weather`. A proxy that refuses the connection (403 at the tunnel) refuses it on every run until its allowlist changes, so the run halts with `GUARDRAIL, halting:` naming each refused host and saying to add it to the environment's network allowlist (exit 3, no log, no odds credit spent: the check sends no key). Any HTTP answer means the host was reached. A timeout or DNS failure is a hiccup, not policy: it is left to the fetch that meets it, which degrades and warns as before. Code: `blocked_hosts` in `madden/net.py`.
+**The network check (added 2026-09-24).** After checks 1 and 2 and before anything is fetched, the engine sends a HEAD request to one URL on every host the run will use: the nflverse schedule (which redirects to GitHub's download host), the odds API unless `--offline-lines`, open-meteo unless `--no-weather`. A proxy that refuses the connection (403 at the tunnel) refuses it on every run until its allowlist changes, so the run halts with `GUARDRAIL, halting:` naming each refused host and saying to add it to the environment's network allowlist (exit 3, no log, no odds credit spent: the check sends no key). Any HTTP answer means the host was reached. A timeout or DNS failure is a hiccup, not policy: it is left to the fetch that meets it, which degrades and warns as before. Code: `blocked_hosts` in `madden/net.py`.
 
 **Together:** only code and inputs that are committed **and** on GitHub can produce picks. The one gap is when GitHub cannot be reached, and RUN HEALTH says so on the board.
 
@@ -169,19 +169,19 @@ They run on **every** engine run, from any shell, not only under Claude Code. Ea
 
 **Tranche selection.** `--tranche` defaults to `auto`: the earliest tranche whose deadline, its first kickoff from the nflverse schedule, is still ahead. RUN HEALTH prints `TRANCHE: auto chose <name>` with the deadline, and names any tranche that has already kicked off. If every tranche on the sheet has kicked off, or no kickoff times are known, it refuses with a plain sentence (exit 3) before any odds credit is spent. `--tranche <name>` still works for Scott's own runs.
 
-**Runs from anywhere.** Relative paths (`--params`, `--log`, `--week`, `--offline-lines`) resolve against the repo root, not the working directory. `python3 ~/dev/madden/madden/run.py` works from any directory. `python3 -m madden.run` works from the repo or wherever the package is importable.
+**Runs from anywhere.** Relative paths (`--params`, `--log`, `--week`, `--offline-lines`) resolve against the repo root, not the working directory. `python3 "<Scott's Second Brain>/Apps/madden/madden/run.py"` works from any directory. `python3 -m madden.run` works from the repo or wherever the package is importable.
 
 ### Who writes to this repo (the sole-writer rule, restated 2026-09-23)
 
 **Old rule, 2026-09-10:** "Only the Madden session writes to this repo. Nothing else pushes to it." Written after another session pushed engine code mid-run.
 
 **Rule now:**
-- Changes to Madden's code are made in a Claude Code session started in `~/dev/madden`, then committed and pushed from there, like any repo.
+- Changes to Madden's code are made in a Claude Code session started in the vault's `Apps/madden`, then committed and pushed from there, like any repo.
 - The engine's in-step-with-GitHub check is what stops a run from stale code. The old rule relied on sessions not writing.
-- Codex is set read-only for this folder (`.codex/config.toml`, `sandbox_mode = "read-only"`), which takes effect when Codex is started here and trusts the folder. Started elsewhere, Codex writes only inside its own starting folder.
+- Codex is set read-only for this folder (`.codex/config.toml`, `sandbox_mode = "read-only"`), which takes effect when Codex is started here and trusts the folder; `~/.codex/config.toml` trusts `Apps/madden` since 2026-09-24. Started elsewhere, Codex writes only inside its own starting folder.
 - Claude's file tools still ask before editing Madden's files, from any session.
 
-This does not stop another session writing into `~/dev/madden` through Bash. Nothing did before; a vault-started session did exactly that on 2026-09-23. The four checks make such a write harmless to a run: code or inputs that are uncommitted, or committed but not on GitHub, cannot produce picks.
+This does not stop another session writing into Madden's folder through Bash. Nothing did before; a vault-started session did exactly that on 2026-09-23. The checks make such a write harmless to a run: code or inputs that are uncommitted, or committed but not on GitHub, cannot produce picks.
 
 **This file is the one copy of the spec.** Until 2026-09-23 it was a byte-identical read copy of the vault's `Knowledge/AI Systems/Agent Specs/madden.md`, and every edit went to both. The vault file is now a pointer here.
 
@@ -369,9 +369,9 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 | Degraded run | Fetch failure or stale data | Which input failed, which games affected, the pick with and without | Notify | Picks stand |
 | Unresolved status | Sunday run, meaningful player still questionable on a later-window game | Which player, which way the line moved, the pick either way | Notify | Pick stands |
 | Silence | No run by the tranche deadline | Alert | Notify | Games revert to favorite |
-| Engine change | Claude's `Edit` or `Write` on any file under `~/dev/madden`, from any session | The file and the change | Approve or reject | The write does not happen |
-| Engine check fails | Not on `main`; behind, ahead of or split from GitHub; anything uncommitted; an input file outside the repo or untracked; a sheet outside `MADDEN_SHEETS_DIR`; a host the run needs refused by the network; every tranche kicked off; or `--cache` under Claude Code | The refusal, one plain sentence naming the problem (exit 3) | Halt | No picks |
-| Code not checked against GitHub | `git fetch` failed or took over 15 seconds, and this Mac holds nothing the saved copy of GitHub lacks | `CODE NOT CHECKED AGAINST GITHUB` with the last successful check time, under run health | Notify | **Picks stand** |
+| Engine change | Claude's `Edit` or `Write` on any file under the vault's `Apps/madden`, from any session | The file and the change | Approve or reject | The write does not happen |
+| Engine check fails | Code here differs from GitHub's main (a file changed, missing or extra); an input file outside the repo or not on GitHub; GitHub unreachable and never checked; a sheet outside `MADDEN_SHEETS_DIR`; a host the run needs refused by the network; every tranche kicked off; or `--cache` under Claude Code | The refusal, one plain sentence naming the problem (exit 3) | Halt | No picks |
+| Code not checked against GitHub | GitHub's main could not be copied within 30 seconds, and the code here matches the copy saved at the last good check | `CODE NOT CHECKED AGAINST GITHUB` with that copy's time, under run health | Notify | **Picks stand** |
 
 **No cap on handbacks (Scott's decision, overruling a recommended cap of three).** He hands back as many games as he lacks the perspective to pick, each with an explanation and a lean. **Tradeoff recorded:** the trigger gets a defined threshold rather than being left to the model's sense of its own uncertainty, and the weekly handback count is logged. If it averages high, the threshold is miscalibrated and the threshold is what gets fixed.
 
@@ -412,7 +412,7 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 - No halting spend ceiling. Two model calls against sixteen games is not a cost story.
 - Degrade and warn, never stop, on data faults. Halt only on sheet fault.
 - Madden never submits, never contacts, never publishes.
-- **No copy of the repo carries `.env`.** A recursive copy of `~/dev/madden` takes `ODDS_API_KEY` with it — `tar`, `cp -r` and `rsync` all do — and a copy in a scratch directory is outside everything that protects the original: `.gitignore` does not reach it, no permission rule stops a copy being made, and nothing sweeps it afterwards. **Seven such copies were found on 2026-09-11**, in `$TMPDIR`, the oldest over an hour old, spanning at least four sessions and two of them made that evening while fixing a different defect. The habit that prevents it: `tar --exclude=.env`, or copy the files you need rather than the tree, then `find <dir> -name '.env*'` before leaving the copy behind. This is its own rule because the one below, about where the key lives, is silent about copies and was read as covering them.
+- **No copy of the repo carries `.env`.** A recursive copy of Madden's folder takes `ODDS_API_KEY` with it — `tar`, `cp -r` and `rsync` all do — and a copy in a scratch directory is outside everything that protects the original: `.gitignore` does not reach it, no permission rule stops a copy being made, and nothing sweeps it afterwards. **Seven such copies were found on 2026-09-11**, in `$TMPDIR`, the oldest over an hour old, spanning at least four sessions and two of them made that evening while fixing a different defect. The habit that prevents it: `tar --exclude=.env`, or copy the files you need rather than the tree, then `find <dir> -name '.env*'` before leaving the copy behind. This is its own rule because the one below, about where the key lives, is silent about copies and was read as covering them.
 - Operator enforcement: see Architecture decision → Operator skill and The engine's four checks.
 
 ---
@@ -457,11 +457,11 @@ The scoreboard is nearly free: every pick resolves within days against unambiguo
 
 ## Runtime
 
-Git-backed local project, run through Claude Code on the MacBook or through Cowork (see Where the engine runs), invoked manually by Scott as `/madden` **from any directory**, or by Scott himself with `! python3 ~/dev/madden/madden/run.py` (see Operator skill; no sandbox since 2026-09-23). Not a scheduled local task pointed at the vault (prohibited by `CLAUDE.md`; **confirm the exact rule there before implementation — not yet done**).
+Git-backed local project, run through Claude Code on the MacBook or through Cowork (see Where the engine runs), invoked manually by Scott as `/madden` **from any directory**, or by Scott himself with `! python3 "<Scott's Second Brain>/Apps/madden/madden/run.py"` (see Operator skill; no sandbox since 2026-09-23). Not a scheduled local task pointed at the vault (prohibited by `CLAUDE.md`; **confirm the exact rule there before implementation — not yet done**).
 
-- Repo: `~/dev/madden`, git-initialised.
-- `ODDS_API_KEY` in `.env`, excluded by `.gitignore`. Never in the vault, never in a repo, never in a conversation, and **never in a copy of the repo** — see Guardrails. **Verified working 2026-09-10** — authenticated call returned `x-requests-last: 1`.
-- `MADDEN_GITHUB_TOKEN` in `.env` while the repo is private: read-only, this repo only, with an expiry date. Same rules as `ODDS_API_KEY`. The engine hands it to git through the environment, never on a command line, where the process list would show it.
+- Repo: `Scott's Second Brain/Apps/madden` (`~/dev/madden` until 2026-09-24), public on GitHub as `GringoMuerto/madden`. Its git database is `~/git-repos/madden.git`, behind a `gitdir:` pointer.
+- `ODDS_API_KEY` in `.env`, excluded by `.gitignore`. In the vault since 2026-09-24, by Scott's decision, so Cowork can read it: the key is on the free plan (500 requests a month, no billing), so a leak costs a month's quota, not money, and a copy is in 1Password. Never in a repo, never in a conversation, and **never in a copy of the repo** — see Guardrails. **Verified working 2026-09-10** — authenticated call returned `x-requests-last: 1`.
+- `MADDEN_GITHUB_TOKEN`: not needed while the repo is public. If it is ever private again: read-only, this repo only, with an expiry date, in `.env`. Same rules as `ODDS_API_KEY`. The engine hands it to git through the environment, never on a command line, where the process list would show it.
 - Tuning parameters in version-controlled config in the same repo.
 
 | Run | When (Central) | Covers | Notes |
