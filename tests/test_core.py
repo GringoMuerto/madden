@@ -116,6 +116,45 @@ def test_missing_line_is_never_fabricated():
     assert p.side is None and p.blind and p.madden_number is None
 
 
+def test_a_drift_past_the_threshold_withholds_the_pick():
+    """The week 1 SF at LAR row, which is why this check exists.
+
+    Sheet +3.5, recorded market -19.0, a drift of 22.5. The old build priced it, banded it
+    high on the size of the error and printed "line moved 22.5 toward SF" as the driver.
+    Nothing warned. The pick won, which is why it went unnoticed.
+    """
+    # LAR was the sheet's favorite and its nominal home, so the sheet home line is +3.5.
+    g = game("LAR", "SF", 3.5, home="LAR", day="Thursday")
+    p = make_pick(g, market_home_line=-19.0, params=PARAMS)
+    assert p.side is None, "a line this far out must not produce a pick"
+    assert p.band == "blind" and p.madden_number is None and p.edge is None
+    # The rejected number is kept: it is the finding, not noise to be blanked.
+    assert p.market_home_line == -19.0
+    assert any("suspect" in w for w in p.warnings)
+    assert any("22.5" in w for w in p.warnings), "the warning names the drift it saw"
+
+
+def test_a_drift_inside_the_threshold_still_prices_normally():
+    """The guard is set to catch a broken feed row, never to second-guess a real move."""
+    limit = PARAMS["odds_api"]["max_drift_points"]
+    g = game("PIT", "ATL", 2.5, home="PIT")
+    p = make_pick(g, market_home_line=2.5 + limit - 0.5, params=PARAMS, temp_f=70)
+    assert p.side is not None and p.madden_number is not None
+    assert not any("suspect" in w for w in p.warnings)
+
+
+def test_the_drift_threshold_is_required_not_defaulted():
+    """A missing key fails loudly rather than disabling the check.
+
+    The spec's own recorded failure is a rule that matched nothing and read exactly like
+    protection for days. A .get() with a fallback here would rebuild that.
+    """
+    stripped = {k: v for k, v in PARAMS.items() if k != "odds_api"}
+    g = game("BAL", "IND", 3.5, home="IND")
+    with pytest.raises(KeyError):
+        make_pick(g, market_home_line=3.0, params=stripped)
+
+
 def test_band_thresholds():
     assert band_for(3.0, 0, 3.0, PARAMS)[0] == "high"
     assert band_for(1.5, 20.0, 18.5, PARAMS)[0] == "medium"

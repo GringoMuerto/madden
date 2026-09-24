@@ -124,3 +124,22 @@ odds_api:
   # only a rematch (this week's meeting has already started and dropped out), and that
   # line is treated as missing rather than used.
   max_kickoff_days: 8
+  # GUESS. The drift past which the fetched line is not believed at all.
+  #
+  # Added 2026-09-20 after the week 1 Thursday board priced SF at LAR off a recorded
+  # market line of -19.0 against a sheet line of +3.5 and printed "line moved 22.5 toward
+  # SF since the sheet was set" as a driver, banded high, with no warning anywhere in the
+  # run. The pick won, which is the reason this exists rather than a reason it does not:
+  # a broken input produced a confident output and nothing in the pipeline noticed.
+  #
+  # The whole method is one subtraction of the sheet's frozen number from this one, so a
+  # wrong line here is not a degraded pick, it is a fabricated edge wearing a band. This
+  # is deliberately loose: it is set to catch a broken feed row, NOT to second-guess a
+  # large move. For scale, the measured sheet-to-market gap is a mean of 0.86 points over
+  # 2025's 269 games, and the biggest genuine news moves -- a starting quarterback ruled
+  # out -- are single digits. 14 is roughly double that and is a key number.
+  #
+  # WHAT WOULD SETTLE IT: the Tuesday snapshot, which records the market at sheet-set
+  # time every week. A season of those measures the real distribution of this gap, and
+  # the threshold should then be set off its tail rather than off this reasoning.
+  max_drift_points: 14.0

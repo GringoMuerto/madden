@@ -140,6 +140,25 @@ def make_pick(game, market_home_line: float | None, params, temp_f: float | None
                     adjustments=adjustments, madden_number=None, edge=None, side=None,
                     band="blind", warnings=warnings, blind=True)
 
+    # A line too far from the sheet to be believed is not a big edge, it is a bad row.
+    # Everything downstream is one subtraction of the frozen number from this one, so a
+    # wrong number here does not degrade the pick, it manufactures an edge and then bands
+    # it on the size of the error. Checked BEFORE the arithmetic for that reason: there is
+    # no number worth computing off a line this far out.
+    drift = market_home_line - game.sheet_home_line
+    limit = params["odds_api"]["max_drift_points"]
+    if abs(drift) > limit:
+        warnings.append(
+            f"market line {market_home_line:+.1f} against a sheet line of "
+            f"{game.sheet_home_line:+.1f} is a drift of {abs(drift):.1f} points, past the "
+            f"{limit:.1f} this feed is trusted for. A move that size is a broken feed row "
+            f"far more often than it is news. The line is treated as suspect rather than "
+            f"priced: pick withheld and the game flagged.")
+        return Pick(game=game, market_home_line=market_home_line,
+                    sheet_home_line=game.sheet_home_line, adjustments=adjustments,
+                    madden_number=None, edge=None, side=None,
+                    band="blind", warnings=warnings, blind=True)
+
     adj_total = sum(a.points for a in adjustments)
     madden_number = market_home_line + adj_total + model_term
     edge = madden_number - game.sheet_home_line
@@ -149,7 +168,6 @@ def make_pick(game, market_home_line: float | None, params, temp_f: float | None
         band = "blind"
 
     drivers = []
-    drift = market_home_line - game.sheet_home_line
     if abs(drift) >= 0.5:
         toward = game.home if drift > 0 else game.away
         drivers.append(f"line moved {abs(drift):.1f} toward {toward} since the sheet was set")

@@ -397,6 +397,10 @@ def pct(healthy: int, total: int) -> str:
 NO_LINE_PLAYED = "already played"
 NO_LINE_FETCH_FAILED = "fetch failed"
 NO_LINE_ABSENT = "not in the feed"
+# A line was fetched and then rejected as too far from the sheet to believe. Distinct from
+# the three above, all of which mean no line arrived at all: this game has a number and the
+# number is the problem, and labelling it "not in the feed" would name the wrong fault.
+NO_LINE_SUSPECT = "line suspect"
 
 
 def no_line_reason(game, scores, fetch_failed: bool) -> tuple[str, str]:
@@ -609,7 +613,13 @@ def main(argv=None) -> int:
     # Say why each unpriced game has no line. Costs 2 credits, so it is asked once, and
     # only when something came back unpriced.
     no_line_labels: dict = {}
-    unpriced = [p for p in picks if p.side is None]
+    # Games with no line at all. A suspect line is deliberately NOT in here: it has a
+    # number, so asking the scores endpoint why it has none would answer a question nobody
+    # asked and label the game with the wrong reason.
+    unpriced = [p for p in picks if p.market_home_line is None]
+    for p in picks:
+        if p.side is None and p.market_home_line is not None:
+            no_line_labels[(p.game.home, p.game.away)] = NO_LINE_SUSPECT
     scores: dict = {}
     if unpriced and not line_fetch_failed:
         print(f"checking whether {len(unpriced)} unpriced game(s) have been played...",
@@ -635,7 +645,10 @@ def main(argv=None) -> int:
         g = p.game
         name = f"{g.away} at {g.home}"
         if p.side is None:
-            print(f"{name:<26}{g.sheet_home_line:>7.1f}{'--':>7}{'--':>7}{'--':>7}{'--':>7}  "
+            # The market column still prints when a line was fetched and rejected. The
+            # rejected number is the whole finding; blanking it would hide what happened.
+            mkt = f"{p.market_home_line:>7.1f}" if p.market_home_line is not None else f"{'--':>7}"
+            print(f"{name:<26}{g.sheet_home_line:>7.1f}{mkt}{'--':>7}{'--':>7}{'--':>7}  "
                   f"{'--':<5}{'blind':<11}"
                   f"{no_line_labels.get((g.home, g.away), 'line missing')}")
             continue
