@@ -21,6 +21,14 @@ from pathlib import Path
 
 import yaml
 
+if __name__ == "__main__" and not __package__:
+    # Run by path (python3 ~/dev/madden/madden/run.py) from any directory: re-enter as
+    # the package, so the relative imports below resolve without an install or a cd.
+    import runpy
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    runpy.run_module("madden.run", run_name="__main__", alter_sys=True)
+    raise SystemExit(0)
+
 from .core import make_pick, tiebreaker
 from . import health
 from . import injuries
@@ -482,6 +490,37 @@ def tranche_deadlines(games, kickoffs) -> dict:
     return out
 
 
+class NoTrancheLeft(Exception):
+    """--tranche auto found nothing still ahead. The message is the plain reason."""
+
+
+def choose_tranche(games, kickoffs, now) -> tuple[str, str]:
+    """--tranche auto: the earliest tranche whose deadline is still ahead.
+
+    Returns (tranche, the run-health line saying why). The deadline is the tranche's
+    first kickoff, from tranche_deadlines, so a tranche whose first game has started is
+    skipped even if later games in it have not: its deadline has passed.
+    """
+    if not kickoffs:
+        raise NoTrancheLeft(
+            "no kickoff times are known for this week, so --tranche auto cannot tell which "
+            "tranche is next; name one with --tranche")
+    deadlines = tranche_deadlines(games, kickoffs)
+    ahead = sorted((d, name) for name, (d, _) in deadlines.items() if d > now)
+    if not ahead:
+        raise NoTrancheLeft(
+            "every tranche on this sheet has already kicked off, so there is nothing left "
+            "to pick; name one with --tranche to run it anyway")
+    deadline, name = ahead[0]
+    passed = sorted(n for n, (d, _) in deadlines.items() if d <= now)
+    local = deadline.astimezone().strftime("%a %Y-%m-%d %H:%M %Z")
+    why = (f"TRANCHE: auto chose {name}, the earliest tranche whose first kickoff is still "
+           f"ahead ({local})")
+    if passed:
+        why += f"; already kicked off: {', '.join(passed)}"
+    return name, why
+
+
 def logged_runs(logdir: Path, season: int, week: int) -> list[tuple[str, datetime]]:
     """(tranche, written_at) for every readable log covering this season and week."""
     out: list[tuple[str, datetime]] = []
@@ -578,7 +617,8 @@ def main(argv=None) -> int:
                     help="use the sheet naming this week number rather than the highest")
     ap.add_argument("--params", default="params.yaml")
     ap.add_argument("--week", help="week file: neutral sites, blind flags, overrides")
-    ap.add_argument("--tranche", default="all", choices=sorted(TRANCHES))
+    ap.add_argument("--tranche", default="auto", choices=["auto", *sorted(TRANCHES)],
+                    help="default auto: the earliest tranche whose first kickoff is ahead")
     ap.add_argument("--offline-lines", help="hand-entered lines instead of the API")
     ap.add_argument("--expect", type=int, help="expected game count; mismatch is a hard stop")
     ap.add_argument("--log", default="logs", help="directory for the run log")
@@ -590,6 +630,15 @@ def main(argv=None) -> int:
                          "never uses this; the spec says perishable data is fetched fresh "
                          "and never written to disk")
     args = ap.parse_args(argv)
+
+    # Runs from anywhere: every relative path resolves against the repo root, never the
+    # working directory, so `python3 -m madden.run` needs no cd.
+    root = Path(__file__).resolve().parent.parent
+    for attr in ("params", "log", "week", "offline_lines"):
+        value = getattr(args, attr)
+        if value is not None:
+            p = Path(value).expanduser()
+            setattr(args, attr, str(p if p.is_absolute() else root / p))
 
     load_env()
     params = load_yaml(args.params)
@@ -643,6 +692,16 @@ def main(argv=None) -> int:
     except SheetFault as exc:
         print(f"SHEET FAULT, halting: {exc}", file=sys.stderr)
         return 2
+
+    notes: list[str] = []                     # run-health lines that are facts, not faults
+    if args.tranche == "auto":
+        try:
+            args.tranche, why = choose_tranche(games, resolved.kickoffs,
+                                               datetime.now(timezone.utc))
+        except NoTrancheLeft as exc:
+            print(f"TRANCHE, halting: {exc}", file=sys.stderr)
+            return 3
+        notes.append(why)
 
     line_fetch_failed = False
     try:
@@ -915,6 +974,8 @@ def main(argv=None) -> int:
         all_warnings = all_warnings + [log_error]
 
     print("\nRUN HEALTH")
+    for n in notes:
+        print(f"  {n}")
     for w in dict.fromkeys(all_warnings):
         print(f"  ! {w}")
     if not all_warnings:
