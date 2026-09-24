@@ -71,32 +71,132 @@ def _cell(row, idx):
     return v
 
 
-def parse_sheet(path: str, expected_games: int | None = None,
-                neutral_sites: list[tuple[str, str]] | None = None) -> list[Game]:
-    """Read the sheet at `path` and return its games in sheet order."""
-    wb = load_workbook(path, data_only=True, read_only=True)
-    ws = wb[wb.sheetnames[0]]
-    rows = [[c for c in r] for r in ws.iter_rows(values_only=True)]
+HEADER_LABELS = ("favorite", "spread", "underdog")
 
-    col_fav = col_spread = col_dog = None
-    header_row = None
+
+@dataclass
+class Header:
+    row: int
+    favorite: int            # column indices
+    spread: int
+    underdog: int
+
+
+def find_header(rows) -> Header | None:
+    """Locate the Favorite / Spread / Underdog header row, or None if there is none.
+
+    By label, never by row number: the operator edits his own template and the day blocks
+    above the header resize week to week.
+    """
     for i, row in enumerate(rows):
         labels = {}
         for j, v in enumerate(row):
-            if isinstance(v, str):
-                key = v.strip().lower()
-                if key in ("favorite", "spread", "underdog"):
-                    labels[key] = j
-        if {"favorite", "spread", "underdog"} <= labels.keys():
-            col_fav, col_spread, col_dog = (
-                labels["favorite"], labels["spread"], labels["underdog"])
-            header_row = i
-            break
+            if isinstance(v, str) and v.strip().lower() in HEADER_LABELS:
+                labels[v.strip().lower()] = j
+        if set(HEADER_LABELS) <= labels.keys():
+            return Header(row=i, favorite=labels["favorite"],
+                          spread=labels["spread"], underdog=labels["underdog"])
+    return None
 
-    if header_row is None:
+
+def _looks_like_a_game(row, header: Header) -> bool:
+    return (isinstance(_cell(row, header.favorite), str)
+            and isinstance(_cell(row, header.underdog), str)
+            and isinstance(_cell(row, header.spread), (int, float)))
+
+
+def count_games(rows, header: Header) -> int:
+    """How many rows under this header resolve to a real game. Never raises.
+
+    Used only to choose between tabs that all carry a header. It must not raise, because
+    a tab being scored is not necessarily the tab that will be parsed, and a malformed row
+    on a tab about to be discarded is not a sheet fault.
+    """
+    total = 0
+    for row in rows[header.row + 1:]:
+        if not _looks_like_a_game(row, header):
+            continue
+        fav_raw, dog_raw = _cell(row, header.favorite), _cell(row, header.underdog)
+        try:
+            abbr(fav_raw), abbr(dog_raw)
+        except ValueError:
+            continue
+        if float(_cell(row, header.spread)) <= 0:
+            continue
+        if _is_allcaps(fav_raw) == _is_allcaps(dog_raw):
+            continue                      # cannot tell the home team: not a clean game row
+        total += 1
+    return total
+
+
+def select_tab(wb):
+    """Choose the tab holding this week's board. Returns (name, rows, header).
+
+    THE FIRST TAB IS NOT THE BOARD. The operator's week 2 workbook is
+    ['01', 'standing', 'cal', 'Week02']: tab one is last week's finished results, scores
+    and everyone's picks already filled in. `wb[wb.sheetnames[0]]` read that tab, and it
+    parses -- it is the same game rows with results beside them -- so the engine would
+    have priced a week that had already been played and said nothing.
+
+    The last tab is no safer, and neither is a name pattern: he renames these week to week
+    and the week 1 file has a single tab called 'Week01'. So the tab is found the same way
+    the header row inside it is found, by what actually parses, and an ambiguous workbook
+    halts rather than picking.
+    """
+    examined, candidates = [], []
+    for name in wb.sheetnames:
+        rows = [[c for c in r] for r in wb[name].iter_rows(values_only=True)]
+        header = find_header(rows)
+        examined.append(name)
+        if header is not None:
+            candidates.append((name, rows, header, count_games(rows, header)))
+
+    if not candidates:
         raise SheetFault(
-            "could not find the Favorite / Spread / Underdog header row. "
-            "The operator may have changed his template; do not guess at columns.")
+            f"no tab in this workbook carries a Favorite / Spread / Underdog header row. "
+            f"Examined {len(examined)}: {', '.join(repr(n) for n in examined)}. The "
+            f"operator may have changed his template; do not guess at the tab or the "
+            f"columns.")
+
+    best = max(c[3] for c in candidates)
+    if best == 0:
+        raise SheetFault(
+            f"{len(candidates)} tab(s) carry a header row but no game parses beneath any "
+            f"of them: {', '.join(repr(c[0]) for c in candidates)}. Examined "
+            f"{len(examined)}: {', '.join(repr(n) for n in examined)}.")
+
+    winners = [c for c in candidates if c[3] == best]
+    if len(winners) > 1:
+        tied = ", ".join(f"{c[0]!r} ({c[3]} games)" for c in winners)
+        raise SheetFault(
+            f"{len(winners)} tabs parse equally well, so which one is this week's board "
+            f"is ambiguous: {tied}. Examined {len(examined)}: "
+            f"{', '.join(repr(n) for n in examined)}. Nothing may guess at this -- pass "
+            f"the right workbook, or have the stale tab removed.")
+
+    name, rows, header, _ = winners[0]
+    return name, rows, header
+
+
+def parse_sheet(path: str, expected_games: int | None = None,
+                neutral_sites: list[tuple[str, str]] | None = None,
+                announce=None) -> list[Game]:
+    """Read the sheet at `path` and return its games in sheet order.
+
+    `announce`, when given, is called with a one-line description of the tab chosen. The
+    caller prints it: which tab was read is the kind of fact that must be on the board,
+    because the failure it guards against produced a complete and entirely wrong slate.
+    """
+    wb = load_workbook(path, data_only=True, read_only=True)
+    tab, rows, header = select_tab(wb)
+    if announce:
+        others = [n for n in wb.sheetnames if n != tab]
+        announce(f"tab:   {tab!r}"
+                 + (f"  (of {len(wb.sheetnames)}: {', '.join(wb.sheetnames)})"
+                    if others else ""))
+
+    header_row, col_fav, col_spread, col_dog = (
+        header.row, header.favorite, header.spread, header.underdog)
 
     neutral = {frozenset(p) for p in (neutral_sites or [])}
     games: list[Game] = []
@@ -152,7 +252,7 @@ def parse_sheet(path: str, expected_games: int | None = None,
         games.append(g)
 
     if not games:
-        raise SheetFault("header row found but no games parsed beneath it")
+        raise SheetFault(f"tab {tab!r}: header row found but no games parsed beneath it")
     if expected_games is not None and len(games) != expected_games:
         raise SheetFault(
             f"parsed {len(games)} games, expected {expected_games}. "

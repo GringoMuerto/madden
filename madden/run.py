@@ -497,7 +497,7 @@ def main(argv=None) -> int:
             return 3
         warnings.extend(guardrail_warnings())
         games = parse_sheet(str(sheet_path), expected_games=args.expect,
-                            neutral_sites=neutral)
+                            neutral_sites=neutral, announce=print)
 
         # Which week this is, worked out from the games themselves. A week file still
         # wins, but it is now optional rather than load-bearing, and the filename is only
