@@ -153,6 +153,13 @@ def load_yaml(path):
 
 PROJECTS = Path.home() / ".claude" / "projects"
 SETTINGS = Path.home() / ".claude" / "settings.json"
+# The posture file, passed at launch with --settings. It carries the sandbox, the
+# allowlist and the denyWrite list without writing anything global: user settings are
+# shared with every other project on this machine, and a machine-wide allowlist
+# starved two Flathead runs. Paths inside it must be absolute or ~/-relative: a bare
+# "./x" in a --settings file resolves against neither the repo nor the project, so it
+# would protect nothing while reading exactly like protection.
+POSTURE = Path.home() / ".config" / "madden" / "settings.json"
 OFF_LIST_HOST = "example.com"   # reserved for documentation; must never be allowlisted
 
 
@@ -228,40 +235,72 @@ def _rule_paths(rules) -> list[Path]:
     return out
 
 
-def declared_guardrails(repo: Path) -> list[str]:
-    """What ~/.claude/settings.json declares, against what a board needs.
+def settings_sources(repo: Path) -> list[Path]:
+    """Every settings file that can carry a permission rule this session loaded.
 
-    DECLARED IS NOT IN FORCE. This reads a file; it cannot see what the running
-    session actually enforces. It is paired with the staleness check above, which
-    refuses when the file is newer than the session, and with the behavioural checks
-    in guard_inputs, which prove the filesystem rules really bind.
+    Not one hardcoded path. A rule can live in managed settings, user settings, a
+    project file, a local file, or the posture file passed at launch with --settings,
+    and which one holds it is Scott's arrangement to change rather than the engine's
+    to assume.
     """
-    try:
-        cfg = json.loads(SETTINGS.read_text())
-    except (OSError, ValueError) as exc:
-        return [f"{SETTINGS} could not be read as JSON ({exc})"]
+    return [
+        Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+        Path("/etc/claude-code/managed-settings.json"),
+        SETTINGS,
+        Path.home() / ".claude" / "settings.local.json",
+        POSTURE,
+        repo / ".claude" / "settings.json",
+        repo / ".claude" / "settings.local.json",
+    ]
 
-    missing = []
-    sandbox = cfg.get("sandbox") or {}
-    if sandbox.get("enabled") is not True:
-        missing.append("sandbox.enabled is not true")
-    if sandbox.get("allowUnsandboxedCommands") is not False:
-        missing.append("sandbox.allowUnsandboxedCommands is not false")
-    if ((sandbox.get("network") or {}).get("strictAllowlist")) is not True:
-        missing.append("sandbox.network.strictAllowlist is not true")
 
-    denied = [Path(str(p)).expanduser()
-              for p in ((sandbox.get("filesystem") or {}).get("denyWrite") or [])]
-    for need in (repo / "madden", repo / "params.yaml", repo / "docs", repo / "tests"):
-        if not any(need == d or d in need.parents for d in denied):
-            missing.append(f"no sandbox denyWrite entry covers {need}")
+def declared_guardrails(repo: Path) -> list[str]:
+    """The one guardrail with no behavioural sibling: the file-tool gate.
 
-    gated = _rule_paths((cfg.get("permissions") or {}).get("ask")) + \
-        _rule_paths((cfg.get("permissions") or {}).get("deny"))
-    if not any(g == repo or g in repo.parents or repo in g.parents for g in gated):
-        missing.append(f"no permissions ask/deny Edit(...) rule covers {repo}, so "
-                       f"Claude's file tools can write the engine without asking")
-    return missing
+    REWRITTEN 2026-09-13. This used to read five assertions out of
+    ~/.claude/settings.json. Four of them are PROVEN elsewhere in guard_inputs and
+    proven for this run rather than for a file: SANDBOX_RUNTIME covers
+    sandbox.enabled and allowUnsandboxedCommands, because a command retried outside
+    the sandbox carries neither; the off-list probe covers strictAllowlist; and the
+    writability test covers denyWrite, more tightly than the declaration did, since
+    it tests the files this run actually opens instead of a list of paths. Reading a
+    declaration of those four added nothing but a dependency on which file happened
+    to carry them -- and that dependency broke the day the posture moved off
+    ~/.claude/settings.json, refusing a board over a file that no longer needs to say
+    anything. That is the same failure this guard has now made three times: asking
+    where something is declared instead of whether it is true now.
+
+    What no sibling proves: Claude's file tools sit outside the sandbox entirely --
+    verified in the act on 2026-09-11, when Bash was refused a write and the Write
+    tool then created that exact path. The writability check tests what THIS PROCESS
+    can open and says nothing about whether Edit and Write prompt. An ask/deny Edit
+    rule is the only thing that binds them, and it cannot be probed from inside a
+    session, because an approved prompt and an absent prompt look identical from in
+    here. So it is read -- but from every source that can carry it.
+
+    Still a declaration, and still weaker than its siblings. It fails closed: no
+    readable source, or no covering rule, is a refusal.
+    """
+    seen, gated, unreadable = [], [], []
+    for src in settings_sources(repo):
+        if not src.is_file():
+            continue
+        try:
+            cfg = json.loads(src.read_text())
+        except (OSError, ValueError) as exc:
+            unreadable.append(f"{src} ({exc})")
+            continue
+        seen.append(src)
+        perms = cfg.get("permissions") or {}
+        gated += _rule_paths(perms.get("ask")) + _rule_paths(perms.get("deny"))
+
+    if any(g == repo or g in repo.parents or repo in g.parents for g in gated):
+        return []
+    where = ", ".join(str(s) for s in seen) if seen else "no readable settings file"
+    note = f" (unparseable: {'; '.join(unreadable)})" if unreadable else ""
+    return [f"no permissions ask/deny Edit(...) rule covering {repo} was found in "
+            f"{where}{note}, so Claude's file tools can write the engine without "
+            f"asking"]
 
 
 def allowlist_in_force(timeout: float = 3.0) -> tuple[str, str]:
@@ -292,8 +331,9 @@ def guard_inputs(paths, cache: bool, repo: Path | None = None) -> str | None:
     in order, cheapest and most certain first:
 
     1. Is the sandbox running at all (SANDBOX_RUNTIME)?
-    2. Does the settings file declare what a board needs -- denyWrite over the
-       engine, strictAllowlist, an Edit rule gating Claude's file tools on the repo?
+    2. Is an Edit rule gating Claude's file tools on the repo, in any settings source
+       that can carry one? The only assertion here with no behavioural sibling; the
+       sandbox, the allowlist and denyWrite are proven by 1, 4 and 3 below.
     3. Do the filesystem rules actually bind? Every input this run will read must be
        unwritable by this process. Behavioural, and the only check here that proves
        rather than reads.
@@ -314,8 +354,7 @@ def guard_inputs(paths, cache: bool, repo: Path | None = None) -> str | None:
                 "sandbox and none of the filesystem or network rules bind")
     missing = declared_guardrails(repo)
     if missing:
-        return (f"{SETTINGS} does not declare what a board needs: "
-                + "; ".join(missing))
+        return "; ".join(missing)
     for p in filter(None, paths):
         try:
             fd = os.open(p, os.O_WRONLY | os.O_APPEND)   # no O_CREAT: creates nothing

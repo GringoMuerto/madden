@@ -447,14 +447,14 @@ def test_a_session_that_cannot_be_dated_warns_rather_than_refusing(tmp_path, mon
     assert "cannot be located" in run_mod.guardrail_warnings()[0]
 
 
-def test_guard_refuses_when_denywrite_does_not_cover_the_engine(tmp_path, monkeypatch):
-    repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo, settings={
-        "permissions": {"ask": [edit_rule(repo)]},
-        "sandbox": {"enabled": True, "allowUnsandboxedCommands": False,
-                    "filesystem": {"denyWrite": ["/somewhere/else"]},
-                    "network": {"strictAllowlist": True}}})
-    assert "denyWrite" in guard_inputs([f], cache=False, repo=repo)
+# REMOVED 2026-09-13: test_guard_refuses_when_denywrite_does_not_cover_the_engine and
+# test_guard_refuses_when_strict_allowlist_is_off. Both pinned declarations that the
+# guard no longer reads, because both are proven behaviourally by a sibling check that
+# is still tested below -- denyWrite by test_guard_refuses_a_writable_input, which is
+# stronger since it tests the files this run opens, and strictAllowlist by
+# test_guard_refuses_when_an_off_list_host_answers. Recorded rather than quietly
+# deleted: these were guard tests, and removing one is the sort of thing that should be
+# visible in a diff.
 
 
 def test_guard_refuses_when_no_edit_rule_gates_the_file_tools(tmp_path, monkeypatch):
@@ -468,14 +468,26 @@ def test_guard_refuses_when_no_edit_rule_gates_the_file_tools(tmp_path, monkeypa
     assert "file tools" in guard_inputs([f], cache=False, repo=repo)
 
 
-def test_guard_refuses_when_strict_allowlist_is_off(tmp_path, monkeypatch):
+def test_the_edit_gate_is_found_in_a_source_that_is_not_user_settings(
+        tmp_path, monkeypatch):
+    """The 2026-09-13 rework: the rule is looked for wherever it can live.
+
+    User settings carry no rule here. The project file does, and that is enough --
+    this is the whole point of not reading one hardcoded path.
+    """
     repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo, settings={
-        "permissions": {"ask": [edit_rule(repo)]},
-        "sandbox": {"enabled": True, "allowUnsandboxedCommands": False,
-                    "filesystem": {"denyWrite": [str(repo)]},
-                    "network": {"strictAllowlist": False}}})
-    assert "strictAllowlist" in guard_inputs([f], cache=False, repo=repo)
+    in_force(tmp_path, monkeypatch, repo, settings={"permissions": {"ask": []}})
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "settings.json").write_text(
+        json.dumps({"permissions": {"ask": [edit_rule(repo)]}}))
+    assert guard_inputs([f], cache=False, repo=repo) is None
+
+
+def test_the_edit_gate_fails_closed_when_no_source_carries_it(tmp_path, monkeypatch):
+    repo, f = a_repo(tmp_path)
+    in_force(tmp_path, monkeypatch, repo, settings={"permissions": {"ask": []}})
+    monkeypatch.setattr(run_mod, "POSTURE", tmp_path / "no-such-posture.json")
+    assert "file tools" in guard_inputs([f], cache=False, repo=repo)
 
 
 def test_guard_refuses_a_writable_input(tmp_path, monkeypatch):
