@@ -32,7 +32,9 @@ import csv
 import io
 import math
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .net import urlopen
 from .sheet import SheetFault
@@ -58,6 +60,10 @@ class Resolution:
     opens: str = ""           # first gameday in the resolved week
     closes: str = ""          # last gameday
     source: str = "nflverse schedule"
+    # frozenset({away, home}) -> aware UTC kickoff. Empty when the week was declared by
+    # hand in a week file rather than resolved, which is why every consumer has to treat
+    # an empty mapping as "not known" and say so, never as "nothing has kicked off".
+    kickoffs: dict = field(default_factory=dict)
 
     def __str__(self) -> str:
         span = f", {self.opens} to {self.closes}" if self.opens else ""
@@ -71,8 +77,26 @@ def _http(url: str) -> bytes:
         return resp.read()
 
 
+def kickoff_at(gameday: str, gametime: str):
+    """An aware UTC datetime for an nflverse gameday plus gametime, or None.
+
+    nflverse writes gametime in Eastern, which is the league's own convention for a
+    schedule. Returning it in UTC rather than Eastern is deliberate: every comparison this
+    feeds -- has this game started, was this run written before that deadline -- is against
+    a run stamp that is already UTC, and two timezones meeting at a comparison is how a
+    check ends up right for half the year.
+    """
+    if not gameday or not gametime:
+        return None
+    try:
+        naive = datetime.strptime(f"{gameday} {gametime[:5]}", "%Y-%m-%d %H:%M")
+        return naive.replace(tzinfo=ZoneInfo("America/New_York")).astimezone(timezone.utc)
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
+
+
 def _by_week(rows) -> dict:
-    """(season, week) -> {frozenset({away, home}): gameday}. Regular season only."""
+    """(season, week) -> {frozenset({away, home}): (gameday, kickoff)}. Regular season."""
     out: dict = {}
     for r in rows:
         if (r.get("game_type") or "REG") != "REG":
@@ -85,7 +109,9 @@ def _by_week(rows) -> dict:
         home = from_nflverse(r.get("home_team", ""))
         if not away or not home:
             continue
-        out.setdefault(key, {})[frozenset((away, home))] = (r.get("gameday") or "")
+        gameday = r.get("gameday") or ""
+        out.setdefault(key, {})[frozenset((away, home))] = (
+            gameday, kickoff_at(gameday, r.get("gametime") or ""))
     return out
 
 
@@ -141,9 +167,11 @@ def resolve(games, get=None) -> Resolution:
             f"in a week file with `season:` and `week:` and pass --week.")
 
     season, week = key
-    days = sorted(d for d in by_week[key].values() if d)
+    days = sorted(d for d, _ in by_week[key].values() if d)
+    kickoffs = {pair: when for pair, (_, when) in by_week[key].items() if when}
     return Resolution(season=season, week=week, matched=best, total=len(wanted),
-                      opens=days[0] if days else "", closes=days[-1] if days else "")
+                      opens=days[0] if days else "", closes=days[-1] if days else "",
+                      kickoffs=kickoffs)
 
 
 def confirm(season: int, week: int, games, get=None) -> list[str]:

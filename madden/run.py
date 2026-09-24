@@ -450,6 +450,126 @@ def handback_lines(picks) -> list[str]:
     return out
 
 
+# The tranche that owns a game for submission. Order matters: Saturday sits in both the
+# international and the sunday day-sets, and an overseas Saturday kickoff is the whole
+# reason the international tranche exists, so it claims Saturday first.
+TRANCHE_ORDER = ("thursday", "international", "sunday")
+
+
+def owning_tranche(day: str) -> str | None:
+    for name in TRANCHE_ORDER:
+        if day in (TRANCHES[name] or ()):
+            return name
+    return None
+
+
+def tranche_deadlines(games, kickoffs) -> dict:
+    """tranche -> (deadline, [games]). The deadline is that tranche's earliest kickoff.
+
+    A tranche's deadline is not a clock time and is deliberately not read off one. It is
+    the moment its first game starts, because that is when the pool stops taking a pick
+    for it and the revert-to-favorite rule fires on anything unsubmitted.
+    """
+    out: dict = {}
+    for g in games:
+        name = owning_tranche(g.day)
+        when = kickoffs.get(frozenset((g.home, g.away)))
+        if name is None or when is None:
+            continue
+        deadline, listed = out.get(name, (None, []))
+        listed.append(f"{g.away} at {g.home}")
+        out[name] = (when if deadline is None or when < deadline else deadline, listed)
+    return out
+
+
+def logged_runs(logdir: Path, season: int, week: int) -> list[tuple[str, datetime]]:
+    """(tranche, written_at) for every readable log covering this season and week."""
+    out: list[tuple[str, datetime]] = []
+    try:
+        paths = sorted(Path(logdir).glob("run-*.json"))
+    except OSError:
+        return out
+    for p in paths:
+        try:
+            rec = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if rec.get("season") != season or rec.get("week") != week:
+            continue
+        try:
+            when = datetime.strptime(str(rec.get("run")), "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        out.append((str(rec.get("tranche")), when))
+    return out
+
+
+def missed_tranches(deadlines, runs, now) -> list[str]:
+    """Tranches whose deadline has passed with no run that beat it.
+
+    This is the absence-of-output check, and it is the reason it lives at the START of a
+    run rather than the end: the thing being detected is a run that did not happen, and
+    nothing inside that run can report it. The next run is the earliest moment anything
+    in this repo can speak, so the Sunday run is what tells Scott about the Thursday miss
+    -- while he can still do something about the rest of the week.
+
+    A run written AFTER the deadline does not count as covering it. That is not pedantry:
+    week 1's thursday tranche ran two and a half hours after its own kickoff, produced a
+    log, and would satisfy any check that only asked whether a log exists.
+    """
+    out: list[str] = []
+    for name in TRANCHE_ORDER:
+        if name not in deadlines:
+            continue
+        deadline, listed = deadlines[name]
+        if deadline > now:
+            continue                                   # not due yet, nothing to say
+        mine = [w for t, w in runs if t in (name, "all")]
+        if any(w < deadline for w in mine):
+            continue                                   # covered in time
+        when = deadline.strftime("%Y-%m-%d %H:%M UTC")
+        if mine:
+            latest = max(mine).strftime("%Y-%m-%d %H:%M UTC")
+            out.append(
+                f"MISSED TRANCHE: the {name} tranche kicked off {when} and the only run "
+                f"covering it was written {latest}, after the deadline. Those picks were "
+                f"made against games already under way. {len(listed)} game(s): "
+                f"{', '.join(listed)}")
+        else:
+            out.append(
+                f"MISSED TRANCHE: the {name} tranche kicked off {when} and no run covers "
+                f"it. Under the pool's rule those games reverted to the favorite. "
+                f"{len(listed)} game(s): {', '.join(listed)}")
+    return out
+
+
+def already_started(in_tranche, kickoffs, now) -> list[str]:
+    """Games in THIS run that have already kicked off.
+
+    soonest() drops a started game's line, so the pick is withheld rather than priced --
+    but only when the odds feed supplies a commence_time, and only as a side effect that
+    says nothing out loud. This says it. Week 1's SF at LAR was priced off a live in-play
+    line of -19.0 while SF led by twenty, banded high, and reported as a win.
+    """
+    out: list[str] = []
+    started = []
+    for g in in_tranche:
+        when = kickoffs.get(frozenset((g.home, g.away)))
+        if when is not None and when <= now:
+            started.append((g, when))
+    if not started:
+        return out
+    out.append(
+        f"{len(started)} of {len(in_tranche)} game(s) in this tranche have already kicked "
+        f"off. A line fetched now is a live price on a game in progress, not a number to "
+        f"pick against, and any edge computed from one is read off the scoreboard")
+    for g, when in started:
+        out.append(f"  already under way: {g.away} at {g.home}, kicked off "
+                   f"{when.strftime('%Y-%m-%d %H:%M UTC')}")
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Madden: weekly ATS picks for the office pool")
     ap.add_argument("--sheet", help="the operator's xlsx; defaults to the highest "
@@ -534,6 +654,28 @@ def main(argv=None) -> int:
 
     days = TRANCHES[args.tranche]
     in_tranche = [g for g in games if not days or g.day in days]
+
+    # Absence of output, which the spec names as the most common real-world agent failure
+    # and the least instrumented. Computed over the WHOLE sheet, not this tranche, because
+    # the miss being looked for is in a tranche this run is not covering.
+    now = datetime.now(timezone.utc)
+    if not resolved.kickoffs:
+        warnings.append(
+            f"no kickoff times are known for this week (the week came from {resolved.source}), "
+            f"so neither the missed-tranche check nor the already-kicked-off check could "
+            f"run. This is not a clean result from either of them")
+    else:
+        deadlines = tranche_deadlines(games, resolved.kickoffs)
+        unknown = [g for g in games
+                   if frozenset((g.home, g.away)) not in resolved.kickoffs]
+        if unknown:
+            warnings.append(
+                f"{len(unknown)} game(s) on the sheet have no kickoff time in the schedule, "
+                f"so they count toward no tranche deadline: "
+                f"{', '.join(f'{g.away} at {g.home}' for g in unknown)}")
+        warnings.extend(missed_tranches(
+            deadlines, logged_runs(Path(args.log), resolved.season, resolved.week), now))
+        warnings.extend(already_started(in_tranche, resolved.kickoffs, now))
 
     # Quarterback exposure. Names only: injuries reach the picks through the market line,
     # and a second injury number would double count it. Nothing here touches a pick.
