@@ -446,9 +446,9 @@ def main(argv=None) -> int:
                     help="skip the injury report (the exposure section then says UNKNOWN)")
     ap.add_argument("--no-weather", action="store_true", help="skip the forecast fetch")
     ap.add_argument("--cache", action="store_true",
-                    help="debugging only: read and write forecasts (6h) on disk. A real run "
-                         "never uses this; the spec says perishable data is fetched fresh "
-                         "and never written to disk")
+                    help="debugging only, and refused unless MADDEN_DEBUG_CACHE=1: read and "
+                         "write forecasts (6h) on disk. A real run never uses this; the spec "
+                         "says perishable data is fetched fresh and never written to disk")
     args = ap.parse_args(argv)
 
     # Runs from anywhere: every relative path resolves against the repo root, never the
@@ -461,9 +461,13 @@ def main(argv=None) -> int:
             setattr(args, attr, str(p if p.is_absolute() else root / p))
 
     load_env()
-    if args.cache and os.environ.get("CLAUDECODE") == "1":
+    # Refused everywhere unless deliberately switched on for debugging. It used to key
+    # on CLAUDECODE=1, which Cowork may not set, so the refusal held in one environment
+    # and not the other. Changed 2026-09-24.
+    if args.cache and os.environ.get("MADDEN_DEBUG_CACHE") != "1":
         print("GUARDRAIL, halting: --cache reads forecasts from disk, so it is not a "
-              "submittable run; refused under Claude Code", file=sys.stderr)
+              "submittable run; refused unless MADDEN_DEBUG_CACHE=1 is set for debugging",
+              file=sys.stderr)
         return 3
     # Checks 1 and 2 run before any input is read: only code and inputs that match
     # GitHub's main may produce picks. See guard.py.

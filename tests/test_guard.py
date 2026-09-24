@@ -554,11 +554,25 @@ def test_the_check_is_handed_repo_root_paths_from_another_directory(a_run, monke
     assert seen["--week"] == str(REPO_ROOT / "examples" / "week1-2026.yaml")
 
 
-def test_cache_is_still_refused_under_claude_code(a_run, monkeypatch, capsys):
+@pytest.mark.parametrize("claudecode", ["1", None])
+def test_cache_is_refused_in_claude_code_and_cowork_alike(a_run, monkeypatch, capsys,
+                                                          claudecode):
+    """Cowork may not set CLAUDECODE; the refusal must not depend on it."""
     _, log = a_run
-    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.delenv("MADDEN_DEBUG_CACHE", raising=False)
+    if claudecode:
+        monkeypatch.setenv("CLAUDECODE", claudecode)
+    else:
+        monkeypatch.delenv("CLAUDECODE", raising=False)
     assert run_main(log, "--cache") == 3
-    assert "--cache" in capsys.readouterr().err
+    assert "MADDEN_DEBUG_CACHE" in capsys.readouterr().err
+
+
+def test_cache_runs_only_when_deliberately_switched_on(a_run, monkeypatch, capsys):
+    _, log = a_run
+    monkeypatch.setenv("MADDEN_DEBUG_CACHE", "1")
+    assert run_main(log, "--cache") == 0
+    assert "CACHE IN USE" in capsys.readouterr().out
 
 
 # ---- the network: every host the run needs, checked before anything is fetched -------

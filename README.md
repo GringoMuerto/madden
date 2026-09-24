@@ -62,8 +62,9 @@ The engine refuses to run, exit 3, with one plain sentence saying why, unless al
    health prints `SHEET: <full path>, last changed <time>`. The sheet is the one input
    nobody checks the origin of, so look at that time.
 
-So after any change: commit and push, then run. `--cache` is also refused under Claude
-Code, because cached forecasts are not a submittable board.
+So after any change: commit and push, then run. `--cache` is also refused, in Claude Code
+and Cowork alike, unless `MADDEN_DEBUG_CACHE=1` is set for debugging, because cached forecasts
+are not a submittable board.
 
 **Then the network.** Before fetching anything it checks every host the run will use:
 `github.com` and `release-assets.githubusercontent.com` (nflverse), `api.the-odds-api.com`
