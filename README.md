@@ -18,11 +18,17 @@ six of fifteen games. That is the failure this file exists to prevent.
 
 ```bash
 pip install -r requirements.txt               # once
-python3 ~/dev/madden/madden/run.py            # from any directory
+python3 ~/Library/CloudStorage/GoogleDrive-cseustace@gmail.com/My\ Drive/Scott\'s\ Second\ Brain/Apps/madden/madden/run.py
 ```
 
-That is the whole command. `.env` (`ODDS_API_KEY`, `MADDEN_SHEETS_DIR`, and
-`MADDEN_GITHUB_TOKEN` while the repo is private) is read from the repo
+The engine lives in the vault at `Scott's Second Brain/Apps/madden` (moved from
+`~/dev/madden` on 2026-09-24 so Cowork can run it with only the vault connected). Its git
+database lives outside the vault at `~/git-repos/madden.git`, and `.git` here is a one-line
+pointer to it, because Drive sync corrupts git databases.
+
+That is the whole command. `.env` (`ODDS_API_KEY`, and `MADDEN_SHEETS_DIR` relative to this
+folder, `../../Personal/NFL/OW Pick Em/26-27`, so it means the same folder on the Mac and in
+Cowork) is read from the repo
 automatically. The tranche is chosen for you: `--tranche auto`, the default, runs the
 earliest tranche whose first kickoff is still ahead, and run health says which one and why.
 If every tranche has already kicked off it refuses. `--tranche thursday|international|
@@ -35,22 +41,22 @@ mean paths in this repo, whatever directory you run from. `python3 -m madden.run
 from inside the repo, or anywhere the package is importable. From `~` it is not, so use the
 path form above.
 
-### Four checks before every run
+### Checks before every run
 
-The engine refuses to run, exit 3, with one plain sentence saying why, unless all four hold:
+The engine refuses to run, exit 3, with one plain sentence saying why, unless all hold:
 
-1. **It matches GitHub.** It fetches from GitHub over HTTPS (15 seconds at most), with
-   `MADDEN_GITHUB_TOKEN` from `.env` when the repo is private, never an SSH key or a saved
-   login, so it works the same from Claude Code and from Cowork. It refuses if this
-   checkout is not on `main`, is behind GitHub, is ahead of it, or has split from it. If GitHub
-   can't be reached, it still refuses when this Mac has commits GitHub's last-known copy
-   lacks. Otherwise it runs and says `CODE NOT CHECKED AGAINST GITHUB` in run health.
-2. **Nothing is uncommitted.** Any changed, staged or new file refuses, and the first few
-   are named. Files git ignores (`.env`, `logs/`, `.cache/`, `.codex/`, Claude Code's
-   per-machine files, and the rest of `.gitignore`) don't count.
-3. **Settings, week and lines files are committed in this repo.** A `--params`, `--week` or
-   `--offline-lines` file from outside the repo, or not committed, refuses.
-4. **The sheet is from the pick'em folder.** It must be inside `MADDEN_SHEETS_DIR`. Run
+1. **It matches GitHub's main, file for file.** It takes a fresh copy of GitHub's `main`
+   over HTTPS (30 seconds at most; the repo is public, so no key) into a scratch folder and
+   compares every file here against it. A file changed here, missing here, or here but not
+   on GitHub refuses, naming the first few. Files GitHub's `.gitignore` ignores (`.env`,
+   `logs/`, `.cache/` and the rest) don't count, and neither does `.git`. It never uses the
+   local git database, so it works the same on the Mac and in Cowork, where that database
+   is out of reach. If GitHub can't be reached, it compares against the copy saved at the
+   last good check (`.cache/github-main.json`) and says `CODE NOT CHECKED AGAINST GITHUB`
+   in run health; with no saved copy it refuses.
+2. **Settings, week and lines files are on GitHub.** A `--params`, `--week` or
+   `--offline-lines` file from outside the repo, or not on GitHub, refuses.
+3. **The sheet is from the pick'em folder.** It must be inside `MADDEN_SHEETS_DIR`. Run
    health prints `SHEET: <full path>, last changed <time>`. The sheet is the one input
    nobody checks the origin of, so look at that time.
 
@@ -64,9 +70,8 @@ proxy refuses stops the run, exit 3, naming the host to add to that environment'
 allowlist. This is what a Cowork run without the allowlist entries hits. A timeout is not a
 refusal: that fetch degrades and warns as before.
 
-**Claude Code and Cowork run it the same way** once both hold: the hosts above reachable
-(Cowork's allowlist is set in Cowork), and GitHub reachable over HTTPS, which for a private
-repo means `MADDEN_GITHUB_TOKEN` in `.env`, a read-only token for this repo only.
+**Claude Code and Cowork run it the same way** once the hosts above are reachable (Cowork's
+allowlist is set in Cowork) and the Cowork conversation has Scott's Second Brain connected.
 
 `--week examples/week1-2026.yaml` is optional: neutral sites, blind flags and manual
 overrides. It may also declare `season:` and `week:`, which overrides the schedule lookup —
@@ -75,7 +80,7 @@ with the schedule still wins, and says so in run health, because a leftover week
 otherwise reintroduce by hand the dark exposure layer this mechanism exists to prevent.
 
 Add `--offline-lines examples/week1-2026-lines.json` to run on hand-entered lines when the
-API is down or out of credits. Both files must be committed (check 3).
+API is down or out of credits. Both files must be on GitHub (check 2).
 
 Every run writes a JSON log to `logs/`.
 
@@ -201,9 +206,12 @@ erases the thing being corrected.
 - Never fabricate a missing line. Missing stays missing and the game gets flagged.
 - Degrade and warn on a data fault. Halt only on a sheet fault.
 - Madden never submits, never contacts, never publishes.
-- `ODDS_API_KEY` and `MADDEN_GITHUB_TOKEN` live in `.env`, which `.gitignore` excludes.
-  Never in the vault, never in a repo, never in a conversation. The engine sends the token
-  to git through the environment, never on a command line, where the process list shows it.
+- `ODDS_API_KEY` lives in `.env`, which `.gitignore` excludes: never in a repo, never in a
+  conversation. Since 2026-09-24 that `.env` is in the vault, by Scott's decision, so Cowork
+  can read it. That is acceptable because the key is on the free plan (500 requests a month,
+  no billing): a leak costs a month's quota, not money. A copy is in 1Password.
+  `MADDEN_GITHUB_TOKEN` is needed only if the repo is ever private again; the engine hands
+  it to git through the environment, never on a command line.
 - **No copy of the repo carries `.env`.** A recursive copy takes the key with it and lands it
   somewhere nothing protects. Use `tar --exclude=.env`, or copy the files you need rather
   than the tree, then `find <dir> -name '.env*'` before you leave the copy behind. Seven

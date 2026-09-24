@@ -1,12 +1,14 @@
-"""The engine's four input checks, against real git repos with a local bare "origin".
+"""The engine's input checks, against real git repos with a local bare "origin".
 
-Nothing here touches the real remote: every repo and every origin is made under tmp_path.
+Nothing here touches the real remote: every repo and every origin is made under tmp_path,
+and the engine is pointed at the origin by URL, as it is pointed at GitHub in a real run.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -42,101 +44,176 @@ def commit(repo, name, text):
 
 
 @pytest.fixture
-def repo(tmp_path):
-    """A checkout on main, in step with a bare origin, with an engine file and params."""
-    origin = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+def origin(tmp_path):
+    """A bare origin standing in for GitHub, holding an engine file, params and a
+    .gitignore, pushed from a first checkout."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
+    (seed / ".gitignore").write_text(".env\nlogs/\n.cache/\n.codex/\n.pytest_cache/\n")
+    (seed / "madden").mkdir()
+    (seed / "madden" / "core.py").write_text("X = 1\n")
+    (seed / "params.yaml").write_text("a: 1\n")
+    git(seed, "add", ".")
+    git(seed, "commit", "-q", "-m", "init")
+    git(seed, "remote", "add", "origin", str(bare))
+    git(seed, "push", "-q", "-u", "origin", "main")
+    return bare
+
+
+@pytest.fixture
+def url(origin):
+    return "file://" + str(origin)
+
+
+@pytest.fixture
+def repo(tmp_path, origin):
+    """A checkout in step with the origin."""
     work = tmp_path / "madden"
-    subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
-    git(work, "remote", "add", "origin", str(origin))
-    (work / ".gitignore").write_text(".env\nlogs/\n.cache/\n.codex/\n")
-    (work / "madden").mkdir()
-    (work / "madden" / "core.py").write_text("X = 1\n")
-    (work / "params.yaml").write_text("a: 1\n")
-    git(work, "add", ".")
-    git(work, "commit", "-q", "-m", "init")
-    git(work, "push", "-q", "-u", "origin", "main")
+    subprocess.run(["git", "clone", "-q", str(origin), str(work)], check=True)
     return work
 
 
-def other_clone(repo, tmp_path):
-    """A second clone of the same origin, standing in for work pushed from elsewhere."""
-    origin = git(repo, "remote", "get-url", "origin").strip()
-    clone = tmp_path / "elsewhere"
-    subprocess.run(["git", "clone", "-q", origin, str(clone)], check=True)
-    return clone
+def pushed_from_elsewhere(tmp_path, origin, name, text):
+    other = tmp_path / "elsewhere"
+    subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+    commit(other, name, text)
+    git(other, "push", "-q", "origin", "main")
 
 
-def unreachable(repo, tmp_path):
-    git(repo, "remote", "set-url", "origin", str(tmp_path / "no-such-origin.git"))
+def check(repo, url, **inputs):
+    return guard.check_repo(inputs, repo, url=url)
 
 
-# ---- check 1: in step with GitHub ----------------------------------------------------
+# ---- check 1: the code here matches GitHub's main -------------------------------------
 
-def test_in_step_passes_silently(repo):
-    assert guard.in_step_with_github(repo) is None
-
-
-def test_behind_origin_refuses(repo, tmp_path):
-    clone = other_clone(repo, tmp_path)
-    commit(clone, "madden/core.py", "X = 2\n")
-    git(clone, "push", "-q", "origin", "main")
-    with pytest.raises(Refusal, match="behind GitHub"):
-        guard.in_step_with_github(repo)
+def test_in_step_passes_silently(repo, url):
+    assert check(repo, url) is None
 
 
-def test_ahead_of_origin_refuses(repo):
+def test_a_changed_engine_file_refuses_and_names_it(repo, url):
+    (repo / "madden" / "core.py").write_text("X = 99\n")
+    with pytest.raises(Refusal, match=r"changed here: madden/core\.py"):
+        check(repo, url)
+
+
+def test_a_local_commit_not_yet_pushed_refuses(repo, url):
     commit(repo, "madden/core.py", "X = 2\n")
-    with pytest.raises(Refusal, match="ahead of GitHub"):
-        guard.in_step_with_github(repo)
+    with pytest.raises(Refusal, match="commit and push, or pull"):
+        check(repo, url)
 
 
-def test_split_from_origin_refuses(repo, tmp_path):
-    clone = other_clone(repo, tmp_path)
-    commit(clone, "madden/core.py", "X = 2\n")
-    git(clone, "push", "-q", "origin", "main")
-    commit(repo, "params.yaml", "a: 2\n")
-    with pytest.raises(Refusal, match="split"):
-        guard.in_step_with_github(repo)
+def test_newer_work_on_github_refuses(repo, url, origin, tmp_path):
+    """The 2026-09-10 stale-checkout failure: GitHub moved on and this copy did not."""
+    pushed_from_elsewhere(tmp_path, origin, "madden/core.py", "X = 2\n")
+    with pytest.raises(Refusal, match=r"changed here: madden/core\.py"):
+        check(repo, url)
 
 
-def test_not_on_main_refuses(repo):
-    git(repo, "checkout", "-q", "-b", "experiment")
-    with pytest.raises(Refusal, match="not main"):
-        guard.in_step_with_github(repo)
+def test_a_file_github_added_is_missing_here(repo, url, origin, tmp_path):
+    pushed_from_elsewhere(tmp_path, origin, "madden/new.py", "Y = 1\n")
+    with pytest.raises(Refusal, match=r"missing here: madden/new\.py"):
+        check(repo, url)
 
 
-def test_unreachable_origin_with_nothing_local_warns(repo, tmp_path):
-    unreachable(repo, tmp_path)
-    warning = guard.in_step_with_github(repo)
+def test_an_extra_file_anywhere_refuses(repo, url):
+    """A new file beside the engine could shadow a module it imports."""
+    (repo / "madden" / "json.py").write_text("")
+    with pytest.raises(Refusal, match=r"here but not on GitHub: madden/json\.py"):
+        check(repo, url)
+
+
+def test_ignored_files_do_not_trip_it(repo, url):
+    (repo / ".env").write_text("ODDS_API_KEY=x\n")
+    (repo / "logs").mkdir()
+    (repo / "logs" / "run.json").write_text("{}")
+    (repo / ".codex").mkdir()
+    (repo / ".codex" / "config.toml").write_text("")
+    (repo / ".pytest_cache").mkdir()
+    (repo / ".pytest_cache" / "README.md").write_text("")
+    assert check(repo, url) is None
+
+
+def test_a_long_list_is_cut_short(repo, url):
+    for i in range(8):
+        (repo / f"stray{i}.txt").write_text("")
+    with pytest.raises(Refusal, match="and 3 more"):
+        check(repo, url)
+
+
+def test_a_plain_folder_with_no_git_database_is_checked_the_same(repo, url, tmp_path):
+    """Cowork: the vault copy's git database lives outside the vault, out of reach."""
+    plain = tmp_path / "plain"
+    shutil.copytree(repo, plain, ignore=shutil.ignore_patterns(".git"))
+    assert check(plain, url) is None
+    (plain / "params.yaml").write_text("a: 9\n")
+    with pytest.raises(Refusal, match=r"params\.yaml"):
+        check(plain, url)
+
+
+def test_the_vaults_one_line_git_pointer_is_not_part_of_the_code(repo, url, tmp_path):
+    plain = tmp_path / "vault-copy"
+    shutil.copytree(repo, plain, ignore=shutil.ignore_patterns(".git"))
+    (plain / ".git").write_text("gitdir: /Users/someone/git-repos/madden.git\n")
+    assert check(plain, url) is None
+
+
+def test_a_nested_git_file_is_still_code(repo, url):
+    """Only the repo root's .git is skipped; a .git file anywhere else is a stray file."""
+    (repo / "madden" / ".git").write_text("")
+    with pytest.raises(Refusal, match=r"madden/\.git"):
+        check(repo, url)
+
+
+# ---- when GitHub cannot be reached ----------------------------------------------------
+
+def test_unreachable_after_a_good_check_warns_and_says_when(repo, url, tmp_path):
+    check(repo, url)                                   # saves the copy of main
+    warning = check(repo, "file://" + str(tmp_path / "no-such-origin.git"))
     assert warning.startswith("CODE NOT CHECKED AGAINST GITHUB: the engine could not "
                               "reach GitHub")
+    assert "compared against the copy of GitHub's main saved" in warning
     assert "cannot confirm GitHub has no newer work" in warning
-    assert "last successful check" in warning
 
 
-def test_unreachable_origin_with_local_only_commits_refuses(repo, tmp_path):
-    commit(repo, "madden/core.py", "X = 2\n")
-    unreachable(repo, tmp_path)
-    with pytest.raises(Refusal, match="last downloaded copy of GitHub lacks"):
-        guard.in_step_with_github(repo)
+def test_unreachable_still_refuses_a_changed_file(repo, url, tmp_path):
+    check(repo, url)
+    (repo / "madden" / "core.py").write_text("X = 99\n")
+    with pytest.raises(Refusal, match="differs from the copy of GitHub's main saved"):
+        check(repo, "file://" + str(tmp_path / "no-such-origin.git"))
 
 
-def test_a_fetch_that_hangs_is_cut_off_and_warns(repo, monkeypatch):
+def test_unreachable_with_no_saved_copy_refuses(repo, tmp_path):
+    with pytest.raises(Refusal, match="never been checked against GitHub"):
+        check(repo, "file://" + str(tmp_path / "no-such-origin.git"))
+
+
+def test_a_clone_that_hangs_is_cut_off(repo, url, monkeypatch):
+    check(repo, url)
     real = guard._git
 
-    def slow(r, *args, timeout=None, env=None):
-        if args[:1] == ("fetch",):
-            raise subprocess.TimeoutExpired("git fetch", timeout)
-        return real(r, *args, timeout=timeout, env=env)
+    def slow(cwd, *args, timeout=None, env=None):
+        if args[:1] == ("clone",):
+            raise subprocess.TimeoutExpired("git clone", timeout)
+        return real(cwd, *args, timeout=timeout, env=env)
 
     monkeypatch.setattr(guard, "_git", slow)
-    warning = guard.in_step_with_github(repo, timeout=15)
+    warning = guard.check_repo({}, repo, url=url, timeout=15)
     assert "no answer within 15 seconds" in warning
 
 
-def test_every_guard_git_command_takes_no_optional_locks(repo, monkeypatch):
-    """A run killed partway must never leave .git/index.lock behind."""
+def test_the_saved_copy_lives_in_the_ignored_cache(repo, url):
+    check(repo, url)
+    saved = json.loads((repo / ".cache" / "github-main.json").read_text())
+    assert "madden/core.py" in saved["files"] and saved["gitignore"].startswith(".env")
+
+
+# ---- git hygiene and GitHub access ------------------------------------------------------
+
+def test_no_git_command_touches_this_repos_git_database(repo, url, monkeypatch):
+    """Every git command runs in a scratch folder, never in the repo, and takes no
+    optional locks, so nothing here can leave an index.lock behind."""
     calls = []
     real = subprocess.run
 
@@ -145,37 +222,12 @@ def test_every_guard_git_command_takes_no_optional_locks(repo, monkeypatch):
         return real(cmd, *args, **kwargs)
 
     monkeypatch.setattr(guard.subprocess, "run", spy)
-    guard.check_repo({"--params": repo / "params.yaml"}, repo)
+    check(repo, url, **{"--params": repo / "params.yaml"})
+    assert calls
     for cmd, env in calls:
-        assert cmd[:2] == ["git", "--no-optional-locks"], cmd
+        assert cmd[0] == "git" and "--no-optional-locks" in cmd, cmd
         assert env.get("GIT_OPTIONAL_LOCKS") == "0", cmd
-    assert {"status", "fetch", "rev-list"} <= {cmd[4] for cmd, _ in calls}
-
-
-def test_status_does_not_rewrite_the_index(repo):
-    """Plain `git status` refreshes a stale index, taking index.lock to do it."""
-    index = repo / ".git" / "index"
-    target = repo / "params.yaml"
-    st = target.stat()
-    os.utime(target, (st.st_atime + 60, st.st_mtime + 60))
-    before = index.read_bytes()
-    guard.nothing_uncommitted(repo)
-    assert index.read_bytes() == before
-
-
-@pytest.mark.parametrize("origin", ["git@github.com:GringoMuerto/madden.git",
-                                    "ssh://git@github.com/GringoMuerto/madden.git",
-                                    "https://github.com/GringoMuerto/madden.git",
-                                    "https://github.com/GringoMuerto/madden"])
-def test_a_github_origin_is_fetched_over_https(repo, origin):
-    """Cowork has no SSH key, so an SSH fetch failed there on every run."""
-    git(repo, "remote", "set-url", "origin", origin)
-    assert guard.fetch_url(repo) == "https://github.com/GringoMuerto/madden.git"
-
-
-def test_any_other_origin_is_fetched_as_configured(repo):
-    origin = git(repo, "remote", "get-url", "origin").strip()
-    assert guard.fetch_url(repo) == origin
+        assert str(repo) not in cmd[cmd.index("-C") + 1], cmd
 
 
 def test_the_token_goes_to_github_only_and_no_saved_login_is_used(monkeypatch):
@@ -191,11 +243,10 @@ def test_the_token_goes_to_github_only_and_no_saved_login_is_used(monkeypatch):
 
 def test_without_a_token_no_header_is_sent(monkeypatch):
     monkeypatch.delenv(guard.TOKEN_VAR, raising=False)
-    env = guard._auth_env()
-    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert guard._auth_env()["GIT_CONFIG_COUNT"] == "1"
 
 
-def test_the_token_never_reaches_the_command_line(repo, monkeypatch):
+def test_the_token_never_reaches_the_command_line(repo, url, monkeypatch):
     monkeypatch.setenv(guard.TOKEN_VAR, "tok123")
     calls = []
     real = subprocess.run
@@ -205,26 +256,8 @@ def test_the_token_never_reaches_the_command_line(repo, monkeypatch):
         return real(cmd, *args, **kwargs)
 
     monkeypatch.setattr(guard.subprocess, "run", spy)
-    guard.in_step_with_github(repo)
+    check(repo, url)
     assert calls and not any("tok123" in part for cmd in calls for part in cmd)
-
-
-def test_a_github_fetch_without_a_token_names_the_missing_token(repo, monkeypatch):
-    monkeypatch.delenv(guard.TOKEN_VAR, raising=False)
-    git(repo, "remote", "set-url", "origin", "git@github.com:GringoMuerto/madden.git")
-    real = guard._git
-
-    def refused(r, *args, timeout=None, env=None):
-        if args[:1] == ("fetch",):
-            return subprocess.CompletedProcess(args, 128, "", "remote: Repository not "
-                                               "found.\nfatal: repository 'https://github"
-                                               ".com/GringoMuerto/madden.git/' not found\n")
-        return real(r, *args, timeout=timeout, env=env)
-
-    monkeypatch.setattr(guard, "_git", refused)
-    warning = guard.in_step_with_github(repo)
-    assert "repository 'https://github.com/GringoMuerto/madden.git/' not found" in warning
-    assert "MADDEN_GITHUB_TOKEN is not set" in warning
 
 
 def test_the_reason_is_gits_fatal_line_not_the_last_line():
@@ -236,92 +269,46 @@ def test_the_reason_is_gits_fatal_line_not_the_last_line():
     assert guard._reason(stderr) == "Could not read from remote repository."
 
 
-# ---- check 2: nothing uncommitted ----------------------------------------------------
-
-def test_a_clean_repo_passes(repo):
-    guard.nothing_uncommitted(repo)
-
-
-def test_a_modified_engine_file_refuses_and_names_it(repo):
-    (repo / "madden" / "core.py").write_text("X = 99\n")
-    with pytest.raises(Refusal, match=r"madden/core\.py"):
-        guard.nothing_uncommitted(repo)
+def test_the_blob_hash_is_gits_own():
+    assert guard.blob_hash(b"X = 1\n") == subprocess.run(
+        ["git", "hash-object", "--stdin"], input=b"X = 1\n",
+        capture_output=True).stdout.decode().strip()
 
 
-def test_modified_params_refuses(repo):
-    (repo / "params.yaml").write_text("a: 99\n")
-    with pytest.raises(Refusal, match=r"params\.yaml"):
-        guard.nothing_uncommitted(repo)
+# ---- check 2: input files live in the repo and are on GitHub -----------------------------
 
-
-def test_a_staged_change_refuses(repo):
-    (repo / "params.yaml").write_text("a: 99\n")
-    git(repo, "add", "params.yaml")
-    with pytest.raises(Refusal, match=r"params\.yaml"):
-        guard.nothing_uncommitted(repo)
-
-
-def test_an_untracked_file_anywhere_refuses(repo):
-    """A new file beside the engine could shadow a module it imports."""
-    (repo / "madden" / "json.py").write_text("")
-    with pytest.raises(Refusal, match=r"madden/json\.py"):
-        guard.nothing_uncommitted(repo)
-
-
-def test_ignored_files_do_not_trip_it(repo):
-    (repo / ".env").write_text("ODDS_API_KEY=x\n")
-    (repo / "logs").mkdir()
-    (repo / "logs" / "run.json").write_text("{}")
-    (repo / ".codex").mkdir()
-    (repo / ".codex" / "config.toml").write_text("")
-    guard.nothing_uncommitted(repo)
-
-
-def test_a_long_list_is_cut_short(repo):
-    for i in range(8):
-        (repo / f"stray{i}.txt").write_text("")
-    with pytest.raises(Refusal, match="and 3 more"):
-        guard.nothing_uncommitted(repo)
-
-
-# ---- check 3: input files live in the repo and are committed ------------------------
-
-def test_a_week_file_outside_the_repo_refuses(repo, tmp_path):
+def test_a_week_file_outside_the_repo_refuses(repo, url, tmp_path):
     outside = tmp_path / "week.yaml"
     outside.write_text("blind: []\n")
     with pytest.raises(Refusal, match="--week file .* is outside the repo"):
-        guard.committed_input(outside, "--week", repo)
+        check(repo, url, **{"--week": outside})
 
 
-def test_an_untracked_week_file_refuses(repo):
+def test_an_untracked_week_file_refuses(repo, url):
     f = repo / "examples" / "week9.yaml"
     f.parent.mkdir()
     f.write_text("blind: []\n")
-    with pytest.raises(Refusal, match="not committed"):
-        guard.committed_input(f, "--week", repo)
+    with pytest.raises(Refusal, match="--week file examples/week9.yaml is not on GitHub"):
+        check(repo, url, **{"--week": f})
 
 
-def test_an_untracked_offline_lines_file_in_an_ignored_folder_refuses(repo):
-    """Check 2 cannot see an ignored file, so check 3 has to."""
+def test_an_offline_lines_file_in_an_ignored_folder_refuses(repo, url):
+    """Check 1 cannot see an ignored file, so check 2 has to."""
     f = repo / "logs" / "lines.json"
     f.parent.mkdir()
     f.write_text("{}")
-    with pytest.raises(Refusal, match="--offline-lines file .* not committed"):
-        guard.committed_input(f, "--offline-lines", repo)
+    with pytest.raises(Refusal, match="--offline-lines file .* not on GitHub"):
+        check(repo, url, **{"--offline-lines": f})
 
 
-def test_a_committed_input_passes(repo):
-    commit(repo, "examples/week9.yaml", "blind: []\n")
-    guard.committed_input(repo / "examples" / "week9.yaml", "--week", repo)
+def test_an_input_on_github_passes(repo, url, origin, tmp_path):
+    pushed_from_elsewhere(tmp_path, origin, "examples/week9.yaml", "blind: []\n")
+    git(repo, "pull", "-q")
+    assert check(repo, url, **{"--week": repo / "examples" / "week9.yaml",
+                               "--params": repo / "params.yaml"}) is None
 
 
-def test_check_repo_runs_all_three(repo, tmp_path):
-    assert guard.check_repo({"--params": repo / "params.yaml", "--week": None}, repo) is None
-    with pytest.raises(Refusal, match="outside the repo"):
-        guard.check_repo({"--offline-lines": tmp_path / "x.json"}, repo)
-
-
-# ---- check 4: the sheet comes from the pick'em folder --------------------------------
+# ---- check 3: the sheet comes from the pick'em folder --------------------------------
 
 def test_a_sheet_outside_the_folder_refuses(tmp_path, monkeypatch):
     folder = tmp_path / "OW Pick Em" / "26-27"
@@ -354,6 +341,22 @@ def test_the_sheet_line_names_the_full_path_and_when_it_changed(tmp_path, monkey
     os.utime(sheet, (when, when))
     line = guard.sheet_from_folder(sheet)
     assert line.startswith(f"SHEET: {sheet.resolve()}, last changed 2026-09-22 09:27")
+
+
+def test_a_relative_sheets_folder_means_relative_to_the_repo(tmp_path, monkeypatch):
+    """The vault is mounted at different paths on the Mac and in Cowork; a path
+    relative to the repo finds the same folder in both."""
+    vault = tmp_path / "vault"
+    repo = vault / "Apps" / "madden"
+    folder = vault / "Personal" / "NFL" / "OW Pick Em" / "26-27"
+    repo.mkdir(parents=True)
+    folder.mkdir(parents=True)
+    sheet = folder / "Eustace - NFL2026w03.xlsx"
+    sheet.write_text("")
+    monkeypatch.setenv("MADDEN_SHEETS_DIR", "../../Personal/NFL/OW Pick Em/26-27")
+    assert guard.sheet_from_folder(sheet, repo).startswith(f"SHEET: {sheet.resolve()}")
+    monkeypatch.chdir(tmp_path)                    # the working directory is irrelevant
+    assert guard.sheet_from_folder(sheet, repo).startswith("SHEET:")
 
 
 def test_no_sheets_folder_set_refuses(tmp_path, monkeypatch):

@@ -1,11 +1,11 @@
 """Run a week.
 
-    python3 ~/dev/madden/madden/run.py            # from any directory
+    python3 "<Scott's Second Brain>/Apps/madden/madden/run.py"   # from any directory
     python3 -m madden.run --tranche sunday       # from the repo, or with it importable
 
 The tranche defaults to auto: the earliest one whose first kickoff is still ahead.
 The sheet is found in MADDEN_SHEETS_DIR; --sheet overrides it, but must still sit there.
-Before anything is read, the four checks in guard.py must pass, or the run exits 3.
+Before anything is read, the checks in guard.py must pass, or the run exits 3.
 Degrade and warn on a data fault, never stop. Halt only on a sheet fault.
 Madden never submits, never contacts, never publishes.
 """
@@ -451,8 +451,8 @@ def main(argv=None) -> int:
         print("GUARDRAIL, halting: --cache reads forecasts from disk, so it is not a "
               "submittable run; refused under Claude Code", file=sys.stderr)
         return 3
-    # Checks 1 to 3 run before any input is read: only committed code and inputs that
-    # are on GitHub may produce picks. See guard.py.
+    # Checks 1 and 2 run before any input is read: only code and inputs that match
+    # GitHub's main may produce picks. See guard.py.
     try:
         github_warning = guard.check_repo({"--params": args.params, "--week": args.week,
                                            "--offline-lines": args.offline_lines})

@@ -9,3 +9,4 @@ sheets/*.xlsx
 .codex/
 .claude/settings.local.json
 .claude/.cc-writes/
+.pytest_cache/
