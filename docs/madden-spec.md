@@ -2,7 +2,7 @@
 type: agent-spec
 status: approved
 created: 2026-09-10
-revised: 2026-09-11
+revised: 2026-09-20
 playbook_version: 2026-08-06
 supersedes: the first madden.md draft written earlier on 2026-09-10, now trashed
 ---
@@ -526,6 +526,36 @@ Git-backed local project, run through Claude Code on the MacBook, invoked manual
 - Market side on gaps ≥2 points: **66.7% (28-14)**.
 - ⚠️ **Single season. The matrix half is partly in-sample. Thresholds chosen after seeing the data. Closing lines are later than Scott's decision point. Not proven.**
 
+**MEASURED — 2025 season, re-derived 2026-09-20 by `madden/backtest.py` (272 games)**
+
+The block above was reproduced from this repo for the first time. Until this date those figures existed only as a claim, the sandbox that produced them having been discarded. Always the favorite **51.1%**, market side only **54.1%**, matrix only **51.1%**, combined **57.0%** — each within a fraction of a point of the recorded value, on 272 games against that block's 269. Market side on gaps ≥2 points reproduced **exactly**: 28-14, 66.7%. The engine's cover side agrees with the operator's own result column on **272 of 272** games, which is what independently validates the sign convention.
+
+**Everything below survives the full season and dies on a half-season split.** Recorded because the full-season numbers are seductive and the split is the only reason they were not acted on.
+
+| | weeks 1-9 | weeks 10-18 | full |
+|---|---|---|---|
+| market side, drift 0.5 | 58.6% (n=29) | 40.7% (n=27) | 50.0% |
+| market side, drift 1.0-1.5 | 47.1% (n=34) | 53.1% (n=49) | 50.6% |
+| market side, drift 2.0+ | **50.0% (n=16)** | 76.9% (n=26) | 66.7% |
+| high band, edge ≥ 3 | 50.0% (n=10) | 70.6% (n=17) | 63.0% |
+| high band, key crossing only | 42.9% (n=28) | 58.8% (n=34) | 51.6% |
+| …crossing 3 | 46.2% (n=13) | 47.4% (n=19) | 46.9% |
+| …crossing 7 | 30.8% (n=13) | 66.7% (n=12) | 48.0% |
+
+**The 66.7% on 2+ point gaps is carried entirely by the second half of the season.** In weeks 1-9 it is 8-8, exactly even. Nothing in this table may be used as a rule.
+
+**The high band holds two populations under one label.** A pick is high either because the edge is 3+ points or because a small edge steps across 3, 7, 10 or 14. The key-crossing branch is 62 of the 89 high-band games and grades 51.6% against the magnitude branch's 63.0%. **This changes no pick and never could:** the side is the sign of the edge, and the band is computed afterwards and gates nothing. Re-banding on magnitude alone relabels 62 games and moves the record not at all — 57.0% either way. Recorded so that nobody re-derives this split expecting a gain from acting on it.
+
+**A 2.0-point drift floor was tested and rejected, 2026-09-20.** Discarding the market line when the drift is under 2 points — on the evidence in the table above that small drifts grade near 50% as a standalone directional rule — costs three points of accuracy: **54.0% against 57.0%, worse in both halves** (48.1 vs 51.9, and 59.9 vs 62.0). On the 56 picks it changes, the engine as built went 32-24 and the floor went 24-32. Taking the favorite below the floor instead is worse again, 51.8%, and flips between halves. **The lesson generalises and is the reason this is recorded: a drift that does not predict a side ON ITS OWN is not a drift worth removing from the number.** Those are two different measurements and the bucket table invites confusing them.
+
+**MEASURED AND UNEXPLAINED — a key-number crossing graded WORSE than no crossing**
+
+On small edges, a number that stepped across a key number covered **51.6%** (32-30). One that crossed nothing covered **57.7%** (97-71). Both groups are small edges; the only difference between them is the geometry this spec says should make a half point near 3 worth several points from 8 to 9. That is anti-correlation, not absence of signal, and **neither Scott nor the author of this spec has an explanation for it.**
+
+The direction holds across both halves and nearly all of the size is in the first: the gap is 12.0 points in weeks 1-9 (42.9 vs 54.9) and 2.2 points in weeks 10-18 (58.8 vs 61.0). One season, one pool's lines, and the split says most of the effect is one stretch of it.
+
+**Not acted on, deliberately.** The key-number upgrade stays exactly as it is. This is an observation that contradicts a stated premise of the method, and the premise — Stern's margin distribution and the key-number frequencies — is externally measured on far more data than one pool season. The contradiction is worth knowing about for several seasons before it is worth doing anything about. See open item 7.
+
 **MEASURED — nflverse 1999-2025**
 - Home teams cover **49.0%** (6,902 games). Stable at 49.0% across the last 10, 15 and 27 seasons. Home favorites 48.2% (CI excludes 50); home underdogs 50.2%.
 - Resolving a 2-point effect needs ~4,900 games ≈ **18 seasons**. Three years cannot do it.
@@ -562,7 +592,11 @@ Thirty-plus hypotheses tested against 27 seasons with an era holdout on each. **
 3. **Tiebreaker sub-tie rule** — does a tie in distance favour the lower guess? Would settle the offset direction.
 4. **Monday night deadline** — "on the sheet but due earlier." Unresolved.
 5. **The first three test cases** are drafted but not reviewed by Scott.
-6. **The 56.9% rests on one season** with thresholds chosen after seeing that season. It is promising, not proven.
+6. **The 56.9% rests on one season** with thresholds chosen after seeing that season. It is promising, not proven. **Partly closed 2026-09-20:** it is now re-derivable from this repo (`madden/backtest.py`, 57.0% over 272 games) and agrees with the operator's own result column on every game. Still one season, still partly in-sample, still not proven.
+7. **Why does a key-number crossing grade worse than no crossing on a small edge?** 51.6% against 57.7% over 2025. Measured, replicated in direction across both halves, and unexplained — see the Evidence Ledger. It contradicts the key-number premise the banding rests on. **What would settle it:** the same split over 2022-2024.
+   **BLOCKED 2026-09-20, and the reason is worth recording because it was assumed the other way first.** `OW Pick Em/Prior/` holds a season-final workbook for **2025 only** — 18 week tabs, 272 games carrying frozen lines. The 2022, 2023 and 2024 files are mid-season working copies: one unplayed board, one prior-week results tab, plus `standing` and `Teams`. That is **16 games each, a single late-season week per season, 48 in total**, of which roughly eleven would carry a key-number crossing. It settles nothing and should not be run for the look of it. Nothing else matching a pool file exists in the Drive.
+   **The four-season figures elsewhere in this ledger are not evidence against this.** They come from the `standing` tab, which carries per-player weekly win counts for a whole season and no frozen lines whatsoever. Pool-level statistics and per-game line data are different things, and only the first is present for 2022-2024. **To unblock: a season-final workbook for 2022, 2023 and 2024 of the kind that exists for 2025.**
+8. **The band gates nothing.** The side is the sign of the edge whatever the band says, so no re-banding can change a record, and "high" currently describes two populations that grade 63.0% and 51.6%. Whether a band should gate anything — a deviation threshold, say — is an open design question and is not answered here.
 
 ---
 

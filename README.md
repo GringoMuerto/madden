@@ -38,6 +38,29 @@ API is down or out of credits. Tranches are `thursday`, `international`, `sunday
 
 Every run writes a JSON log to `logs/`.
 
+## Grade it
+
+```bash
+python -m madden.grade logs/run-20260913T164534Z-sunday.json
+```
+
+Joins a run log to nflverse final scores. Reports Madden's record over the picks he made,
+the record **as submitted** (a withheld pick reverts to the favorite and is scored that
+way, because the pool scores it that way), take-every-favorite, the deviation record, the
+market side relative to the sheet, and the record by band. Reads a log the engine already
+wrote; it never prices a game.
+
+```bash
+python -m madden.backtest --archive "<season-final>.xlsx" --season 2025
+```
+
+Prices a whole archived season with the real engine — `make_pick`, the real `params.yaml`
+— and grades it against every baseline. Three caveats travel with every number it prints,
+and they are in the module docstring: the market line is the **closing** line rather than
+the Sunday-morning one, the band thresholds were chosen after seeing seasons that include
+the one being tested, and one season carries a standard error near 3 points. Compare two
+rules on the games where they **differ**, which is what its head-to-head section prints.
+
 ## The arithmetic
 
 ```
@@ -85,6 +108,28 @@ erases the thing being corrected.
   this system*. Exposure needs no flag and cannot go dark quietly: a failed fetch, an
   empty week, and individual teams missing from the build each raise their own run-health
   line, and only an explicit `--no-injuries` turns the layer off.
+- **Drift sanity check** (`odds_api.max_drift_points`, GUESS). A fetched line further from
+  the sheet than the threshold is not believed: the pick is withheld and the game is
+  flagged, checked before any arithmetic runs. Added 2026-09-20 after the week 1 Thursday
+  board priced SF at LAR off a recorded market line of -19.0 against a sheet of +3.5 and
+  banded it high on the size of the error. The band is computed from the edge, so a broken
+  line does not degrade a pick, it manufactures a confident one.
+- **Grading harness** (`python -m madden.grade <log>`). Joins a run log to nflverse final
+  scores and reports Madden's record, the same record as actually submitted (reverts
+  included), take-every-favorite, deviations, the market side, and the record by band.
+- **Backtest** (`python -m madden.backtest --archive <season-final.xlsx> --season 2025`).
+  Prices a whole archived season with the real engine and grades it against the baselines.
+  It reproduces the spec's 2025 figures to within a fraction of a point, so that
+  measurement is no longer a claim that cannot be re-derived from this repo.
+- **Deadline ledger and after-kickoff warning.** A tranche's deadline is its earliest
+  kickoff, from the nflverse schedule. At the start of every run the engine reports any
+  tranche whose deadline has passed with no run that beat it — so the Sunday run names the
+  Thursday miss while the rest of the week can still be submitted. **A run written after
+  the deadline does not count as covering it**: week 1's Thursday tranche ran two and a
+  half hours after its own kickoff, wrote a log, exited 0, and satisfied any check that
+  only asks whether a log exists. Separately, a game in this tranche that has already
+  kicked off is named in run health, because a line fetched then is a live in-play price
+  and an edge computed from one is read off the scoreboard.
 - Run log, run health, degrade-and-warn on every data fault.
 
 ## What is not built
@@ -104,9 +149,10 @@ erases the thing being corrected.
   wind now come from open-meteo (`madden/weather.py`); the week file only overrides them.
   The schedule *is* now fetched (`madden/schedule.py`), but only to resolve the week —
   venue and roof still come from `teams.py` and the week file.
-- **Backtest harness.** Needs nflverse ingest plus the pool archive. This is what would
-  re-establish the 56.9% measurement, which currently exists only as a claim in the spec
-  because the sandbox that produced it was discarded.
+- **A watcher for a week with no run at all.** The deadline ledger above speaks at the
+  start of the *next* run, so it catches a skipped tranche and cannot catch a skipped
+  week. That needs something outside the engine on a timer — the spec names absence of
+  output as the most common real-world agent failure and the least instrumented.
 - **Scoreboard writer** (Airtable recommended, not confirmed).
 
 ## Rules that are not negotiable

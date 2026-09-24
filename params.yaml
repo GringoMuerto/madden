@@ -10,7 +10,7 @@
 
 # Stamped into every run log. Moves when the spec's own revised: date moves, so a log says
 # which spec actually ran.
-spec_version: "2026-09-11"
+spec_version: "2026-09-20"
 
 sheets:
   # Where the operator's weekly xlsx lives. Relative paths resolve against the project
