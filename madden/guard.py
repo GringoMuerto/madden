@@ -40,8 +40,11 @@ class Refusal(Exception):
 
 
 def _git(repo: Path, *args, timeout: float | None = None) -> subprocess.CompletedProcess:
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C")
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+    # No optional locks: plain `git status` refreshes the index under index.lock, and a
+    # run killed partway would leave that lock behind to block every later git command.
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C", GIT_OPTIONAL_LOCKS="0")
+    return subprocess.run(["git", "--no-optional-locks", "-C", str(repo), *args],
+                          capture_output=True,
                           text=True, timeout=timeout, env=env)
 
 

@@ -135,6 +135,34 @@ def test_a_fetch_that_hangs_is_cut_off_and_warns(repo, monkeypatch):
     assert "no answer within 15 seconds" in warning
 
 
+def test_every_guard_git_command_takes_no_optional_locks(repo, monkeypatch):
+    """A run killed partway must never leave .git/index.lock behind."""
+    calls = []
+    real = subprocess.run
+
+    def spy(cmd, *args, **kwargs):
+        calls.append((cmd, kwargs.get("env") or {}))
+        return real(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(guard.subprocess, "run", spy)
+    guard.check_repo({"--params": repo / "params.yaml"}, repo)
+    for cmd, env in calls:
+        assert cmd[:2] == ["git", "--no-optional-locks"], cmd
+        assert env.get("GIT_OPTIONAL_LOCKS") == "0", cmd
+    assert {"status", "fetch", "rev-list"} <= {cmd[4] for cmd, _ in calls}
+
+
+def test_status_does_not_rewrite_the_index(repo):
+    """Plain `git status` refreshes a stale index, taking index.lock to do it."""
+    index = repo / ".git" / "index"
+    target = repo / "params.yaml"
+    st = target.stat()
+    os.utime(target, (st.st_atime + 60, st.st_mtime + 60))
+    before = index.read_bytes()
+    guard.nothing_uncommitted(repo)
+    assert index.read_bytes() == before
+
+
 # ---- check 2: nothing uncommitted ----------------------------------------------------
 
 def test_a_clean_repo_passes(repo):
