@@ -5,6 +5,7 @@ Nothing here touches the real remote: every repo and every origin is made under 
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -315,3 +316,120 @@ def test_the_script_path_form_runs_from_anywhere(tmp_path):
     r = subprocess.run([sys.executable, str(REPO_ROOT / "madden" / "run.py"), "--help"],
                        cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+# ---- the checks inside a real main() run ----------------------------------------------
+# Everything that would reach the network is stubbed; the run itself is the engine's.
+
+from madden import run as run_mod
+from madden import schedule
+
+
+@pytest.fixture
+def a_run(tmp_path, monkeypatch):
+    """A main() run from a directory that is not the repo, with a sheet in the folder."""
+    folder = tmp_path / "OW Pick Em" / "26-27"
+    folder.mkdir(parents=True)
+    sheet = folder / "Eustace - NFL2026w03.xlsx"
+    sheet.write_text("")
+    monkeypatch.setenv("MADDEN_SHEETS_DIR", str(folder))
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_mod.guard, "check_repo", lambda inputs: None)
+    monkeypatch.setattr(run_mod, "parse_sheet", lambda *a, **k: list(WEEK))
+    monkeypatch.setattr(schedule, "resolve", lambda games, get=None: schedule.Resolution(
+        season=2026, week=4, matched=3, total=3, kickoffs=dict(KICKOFFS)))
+    monkeypatch.setattr(run_mod, "fetch_lines", lambda params: {})
+    monkeypatch.setattr(run_mod, "fetch_scores", lambda params: {})
+    monkeypatch.setattr(run_mod, "datetime", _Frozen)
+    return sheet, tmp_path / "logs"
+
+
+class _Frozen(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return utc("2026-09-25 12:00").astimezone(tz)
+
+
+def run_main(log, *flags):
+    return run_mod.main(["--no-injuries", "--no-weather", "--log", str(log), *flags])
+
+
+def health_of(out):
+    return out.split("RUN HEALTH", 1)[1]
+
+
+def test_run_health_names_the_sheet_and_the_tranche_auto_chose(a_run, capsys):
+    sheet, log = a_run
+    assert run_main(log) == 0
+    health = health_of(capsys.readouterr().out)
+    assert f"SHEET: {sheet.resolve()}, last changed" in health
+    assert "TRANCHE: auto chose sunday" in health and "already kicked off: thursday" in health
+    record = json.loads(next(log.glob("run-*-sunday.json")).read_text())
+    assert record["tranche"] == "sunday"
+    assert any(n.startswith("SHEET: ") for n in record["health_notes"])
+
+
+def test_an_unreachable_github_is_said_in_run_health(a_run, monkeypatch, capsys):
+    _, log = a_run
+    monkeypatch.setattr(run_mod.guard, "check_repo", lambda inputs: (
+        "CODE NOT CHECKED AGAINST GITHUB: the engine could not reach GitHub"))
+    assert run_main(log) == 0
+    assert "! CODE NOT CHECKED AGAINST GITHUB" in health_of(capsys.readouterr().out)
+
+
+def test_a_repo_refusal_halts_with_exit_3_before_anything_is_read(a_run, monkeypatch, capsys):
+    _, log = a_run
+
+    def refuse(inputs):
+        raise Refusal("this Mac is 1 commit(s) behind GitHub")
+
+    monkeypatch.setattr(run_mod.guard, "check_repo", refuse)
+    monkeypatch.setattr(run_mod, "fetch_lines", lambda p: pytest.fail("fetched lines"))
+    assert run_main(log) == 3
+    assert "GUARDRAIL, halting: this Mac is 1 commit(s) behind" in capsys.readouterr().err
+
+
+def test_a_sheet_from_elsewhere_halts_with_exit_3(a_run, tmp_path, capsys):
+    _, log = a_run
+    handmade = tmp_path / "NFL2026w03.xlsx"
+    handmade.write_text("")
+    assert run_main(log, "--sheet", str(handmade)) == 3
+    assert "not in the pick'em folder" in capsys.readouterr().err
+
+
+def test_every_tranche_kicked_off_halts_with_exit_3(a_run, monkeypatch, capsys):
+    _, log = a_run
+
+    class Late(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return utc("2026-09-27 18:00").astimezone(tz)
+
+    monkeypatch.setattr(run_mod, "datetime", Late)
+    monkeypatch.setattr(run_mod, "fetch_lines", lambda p: pytest.fail("spent a credit"))
+    assert run_main(log) == 3
+    assert "every tranche on this sheet has already kicked off" in capsys.readouterr().err
+
+
+def test_a_named_tranche_still_works(a_run, capsys):
+    _, log = a_run
+    assert run_main(log, "--tranche", "all") == 0
+    assert "TRANCHE: auto" not in capsys.readouterr().out
+
+
+def test_the_check_is_handed_repo_root_paths_from_another_directory(a_run, monkeypatch):
+    """Run from tmp_path; params.yaml and a relative --week still mean the repo's."""
+    _, log = a_run
+    seen = {}
+    monkeypatch.setattr(run_mod.guard, "check_repo", lambda inputs: seen.update(inputs))
+    assert run_main(log, "--week", "examples/week1-2026.yaml", "--tranche", "all") == 0
+    assert seen["--params"] == str(REPO_ROOT / "params.yaml")
+    assert seen["--week"] == str(REPO_ROOT / "examples" / "week1-2026.yaml")
+
+
+def test_cache_is_still_refused_under_claude_code(a_run, monkeypatch, capsys):
+    _, log = a_run
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert run_main(log, "--cache") == 3
+    assert "--cache" in capsys.readouterr().err

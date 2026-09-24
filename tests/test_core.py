@@ -6,8 +6,6 @@ so a negative adjustment favours the visitor. A previous reconstruction had this
 """
 
 import http.client
-import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,8 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from madden.core import band_for, crosses_key_number, make_pick, situational_adjustments
 from madden.sheet import Game, SheetFault, parse_sheet
-from madden import run as run_mod
-from madden.run import guard_inputs
 
 PARAMS = yaml.safe_load((Path(__file__).resolve().parents[1] / "params.yaml").read_text())
 
@@ -383,185 +379,6 @@ def test_forecast_is_not_written_to_disk_without_the_cache_flag(tmp_path, monkey
     kickoff = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
     assert weather.forecast("PIT", kickoff) == (80.4, 5.0)
     assert not (tmp_path / ".cache").exists()
-
-
-SESSION = "74fc4cf6-d921-46d3-954d-25484bf2f7b1"
-
-
-def in_force(tmp_path, monkeypatch, repo, started_in=None, settings=None,
-             probe=("blocked", "proxy refused it")):
-    """Stand up a session in which every guardrail Madden needs is in force.
-
-    `started_in` defaults to somewhere that is NOT the repo, because running from
-    anywhere is the point: the rules live in user settings now.
-    """
-    projects = tmp_path / "projects"
-    d = projects / run_mod.project_dir_name(Path(started_in or (tmp_path / "anywhere")))
-    d.mkdir(parents=True)
-    transcript = d / f"{SESSION}.jsonl"
-    transcript.write_text("{}")
-
-    cfg = settings if settings is not None else {
-        "permissions": {"ask": [edit_rule(repo)]},
-        "sandbox": {
-            "enabled": True,
-            "allowUnsandboxedCommands": False,
-            "filesystem": {"denyWrite": [str(repo)]},
-            "network": {"strictAllowlist": True},
-        },
-    }
-    f = tmp_path / "settings.json"
-    f.write_text(json.dumps(cfg))
-    # The settings must predate the session, or the staleness check refuses.
-    os.utime(f, (transcript.stat().st_mtime - 60, transcript.stat().st_mtime - 60))
-
-    monkeypatch.setattr(run_mod, "PROJECTS", projects)
-    monkeypatch.setattr(run_mod, "SETTINGS", f)
-    monkeypatch.setattr(run_mod, "allowlist_in_force", lambda *a, **k: probe)
-    monkeypatch.setenv("CLAUDECODE", "1")
-    monkeypatch.setenv("SANDBOX_RUNTIME", "1")
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
-    return f
-
-
-def edit_rule(repo):
-    """Claude Code's absolute-path form: // then the path without its leading slash."""
-    return f"Edit(//{str(repo).lstrip('/')}/**)"
-
-
-def a_repo(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    f = repo / "params.yaml"
-    f.write_text("x")
-    f.chmod(0o444)
-    return repo, f
-
-
-def test_project_dir_name_matches_claude_codes_own_escaping():
-    # Every character that is not a letter or a digit becomes a hyphen.
-    assert run_mod.project_dir_name(Path("/Users/gringomuerto/dev/madden")) == (
-        "-Users-gringomuerto-dev-madden")
-    assert run_mod.project_dir_name(Path("/a/GoogleDrive-x@y.com/My Drive/Scott's B")) == (
-        "-a-GoogleDrive-x-y-com-My-Drive-Scott-s-B")
-
-
-def test_rule_paths_reads_both_absolute_and_home_relative_forms():
-    assert run_mod._rule_paths(["Edit(//tmp/x/**)"]) == [Path("/tmp/x")]
-    assert run_mod._rule_paths(["Bash(rm:*)", "WebSearch"]) == []
-
-
-def test_guard_passes_from_a_directory_that_is_not_the_repo(tmp_path, monkeypatch):
-    """The point of the 2026-09-11 rework: where the session started is not a gate."""
-    repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo, started_in=tmp_path / "some-other-place")
-    assert guard_inputs([f], cache=False, repo=repo) is None
-
-
-def test_guard_refuses_when_the_sandbox_is_not_running(tmp_path, monkeypatch):
-    repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo)
-    monkeypatch.delenv("SANDBOX_RUNTIME")
-    assert "SANDBOX_RUNTIME" in guard_inputs([f], cache=False, repo=repo)
-
-
-def test_stale_settings_warn_rather_than_refuse(tmp_path, monkeypatch):
-    """Scott's call, 2026-09-11. The sandbox was seen hot-reloading its network policy
-    mid-session, so the divergence this checks for may not happen; blocking a Sunday
-    board on a settings edit is a certain cost against a speculative one. It must
-    still be said out loud."""
-    repo, f = a_repo(tmp_path)
-    settings = in_force(tmp_path, monkeypatch, repo)
-    os.utime(settings, None)          # touch it: now newer than the transcript
-    assert guard_inputs([f], cache=False, repo=repo) is None
-    warned = run_mod.guardrail_warnings()
-    assert warned and "not necessarily the rules" in warned[0]
-
-
-def test_a_session_that_cannot_be_dated_warns_rather_than_refusing(tmp_path, monkeypatch):
-    repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo)
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
-    assert guard_inputs([f], cache=False, repo=repo) is None
-    assert "cannot be located" in run_mod.guardrail_warnings()[0]
-
-
-# REMOVED 2026-09-13: test_guard_refuses_when_denywrite_does_not_cover_the_engine and
-# test_guard_refuses_when_strict_allowlist_is_off. Both pinned declarations that the
-# guard no longer reads, because both are proven behaviourally by a sibling check that
-# is still tested below -- denyWrite by test_guard_refuses_a_writable_input, which is
-# stronger since it tests the files this run opens, and strictAllowlist by
-# test_guard_refuses_when_an_off_list_host_answers. Recorded rather than quietly
-# deleted: these were guard tests, and removing one is the sort of thing that should be
-# visible in a diff.
-
-
-def test_guard_refuses_when_no_edit_rule_gates_the_file_tools(tmp_path, monkeypatch):
-    """Claude's file tools bypass the sandbox; an ask/deny rule is all that binds them."""
-    repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo, settings={
-        "permissions": {"ask": []},
-        "sandbox": {"enabled": True, "allowUnsandboxedCommands": False,
-                    "filesystem": {"denyWrite": [str(repo)]},
-                    "network": {"strictAllowlist": True}}})
-    assert "file tools" in guard_inputs([f], cache=False, repo=repo)
-
-
-def test_the_edit_gate_is_found_in_a_source_that_is_not_user_settings(
-        tmp_path, monkeypatch):
-    """The 2026-09-13 rework: the rule is looked for wherever it can live.
-
-    User settings carry no rule here. The project file does, and that is enough --
-    this is the whole point of not reading one hardcoded path.
-    """
-    repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo, settings={"permissions": {"ask": []}})
-    (repo / ".claude").mkdir()
-    (repo / ".claude" / "settings.json").write_text(
-        json.dumps({"permissions": {"ask": [edit_rule(repo)]}}))
-    assert guard_inputs([f], cache=False, repo=repo) is None
-
-
-def test_the_edit_gate_fails_closed_when_no_source_carries_it(tmp_path, monkeypatch):
-    repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo, settings={"permissions": {"ask": []}})
-    monkeypatch.setattr(run_mod, "POSTURE", tmp_path / "no-such-posture.json")
-    assert "file tools" in guard_inputs([f], cache=False, repo=repo)
-
-
-def test_guard_refuses_a_writable_input(tmp_path, monkeypatch):
-    repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo)
-    f.chmod(0o644)
-    assert "writable by this process" in guard_inputs([f], cache=False, repo=repo)
-
-
-def test_guard_refuses_when_an_off_list_host_answers(tmp_path, monkeypatch):
-    """Declared is not in force. If example.com answers, the allowlist is not on."""
-    repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo, probe=("open", "example.com answered"))
-    assert "not in force" in guard_inputs([f], cache=False, repo=repo)
-
-
-def test_an_inconclusive_probe_warns_rather_than_refusing(tmp_path, monkeypatch):
-    """A flaky network on a Sunday morning must not cost Scott his board."""
-    repo, f = a_repo(tmp_path)
-    in_force(tmp_path, monkeypatch, repo, probe=("unknown", "the probe itself failed"))
-    assert guard_inputs([f], cache=False, repo=repo) is None
-    assert run_mod.guardrail_warnings() and "could not confirm" in \
-        run_mod.guardrail_warnings()[0]
-
-
-def test_guard_is_off_outside_claude_code(tmp_path, monkeypatch):
-    f = tmp_path / "params.yaml"
-    f.write_text("x")
-    monkeypatch.delenv("CLAUDECODE", raising=False)
-    assert guard_inputs([f], cache=False) is None
-
-
-def test_cache_is_refused_under_claude_code(monkeypatch):
-    monkeypatch.setenv("CLAUDECODE", "1")
-    assert guard_inputs([], cache=True) is not None
 
 
 # Under the sandbox proxy a request sent with "Connection: close" can come back with the
