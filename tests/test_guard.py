@@ -125,10 +125,10 @@ def test_unreachable_origin_with_local_only_commits_refuses(repo, tmp_path):
 def test_a_fetch_that_hangs_is_cut_off_and_warns(repo, monkeypatch):
     real = guard._git
 
-    def slow(r, *args, timeout=None):
+    def slow(r, *args, timeout=None, env=None):
         if args[:1] == ("fetch",):
             raise subprocess.TimeoutExpired("git fetch", timeout)
-        return real(r, *args, timeout=timeout)
+        return real(r, *args, timeout=timeout, env=env)
 
     monkeypatch.setattr(guard, "_git", slow)
     warning = guard.in_step_with_github(repo, timeout=15)
@@ -161,6 +161,79 @@ def test_status_does_not_rewrite_the_index(repo):
     before = index.read_bytes()
     guard.nothing_uncommitted(repo)
     assert index.read_bytes() == before
+
+
+@pytest.mark.parametrize("origin", ["git@github.com:GringoMuerto/madden.git",
+                                    "ssh://git@github.com/GringoMuerto/madden.git",
+                                    "https://github.com/GringoMuerto/madden.git",
+                                    "https://github.com/GringoMuerto/madden"])
+def test_a_github_origin_is_fetched_over_https(repo, origin):
+    """Cowork has no SSH key, so an SSH fetch failed there on every run."""
+    git(repo, "remote", "set-url", "origin", origin)
+    assert guard.fetch_url(repo) == "https://github.com/GringoMuerto/madden.git"
+
+
+def test_any_other_origin_is_fetched_as_configured(repo):
+    origin = git(repo, "remote", "get-url", "origin").strip()
+    assert guard.fetch_url(repo) == origin
+
+
+def test_the_token_goes_to_github_only_and_no_saved_login_is_used(monkeypatch):
+    monkeypatch.setenv(guard.TOKEN_VAR, "tok123")
+    env = guard._auth_env()
+    pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+             for i in range(int(env["GIT_CONFIG_COUNT"]))}
+    assert pairs["credential.helper"] == ""
+    header = pairs["http.https://github.com/.extraheader"]
+    assert header.startswith("Authorization: Basic ")
+    assert "tok123" not in header                  # encoded, never sent in the clear
+
+
+def test_without_a_token_no_header_is_sent(monkeypatch):
+    monkeypatch.delenv(guard.TOKEN_VAR, raising=False)
+    env = guard._auth_env()
+    assert env["GIT_CONFIG_COUNT"] == "1"
+
+
+def test_the_token_never_reaches_the_command_line(repo, monkeypatch):
+    monkeypatch.setenv(guard.TOKEN_VAR, "tok123")
+    calls = []
+    real = subprocess.run
+
+    def spy(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return real(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(guard.subprocess, "run", spy)
+    guard.in_step_with_github(repo)
+    assert calls and not any("tok123" in part for cmd in calls for part in cmd)
+
+
+def test_a_github_fetch_without_a_token_names_the_missing_token(repo, monkeypatch):
+    monkeypatch.delenv(guard.TOKEN_VAR, raising=False)
+    git(repo, "remote", "set-url", "origin", "git@github.com:GringoMuerto/madden.git")
+    real = guard._git
+
+    def refused(r, *args, timeout=None, env=None):
+        if args[:1] == ("fetch",):
+            return subprocess.CompletedProcess(args, 128, "", "remote: Repository not "
+                                               "found.\nfatal: repository 'https://github"
+                                               ".com/GringoMuerto/madden.git/' not found\n")
+        return real(r, *args, timeout=timeout, env=env)
+
+    monkeypatch.setattr(guard, "_git", refused)
+    warning = guard.in_step_with_github(repo)
+    assert "repository 'https://github.com/GringoMuerto/madden.git/' not found" in warning
+    assert "MADDEN_GITHUB_TOKEN is not set" in warning
+
+
+def test_the_reason_is_gits_fatal_line_not_the_last_line():
+    """Week 3's warning quoted "and the repository exists.", the tail of the message."""
+    stderr = ("git@github.com: Permission denied (publickey).\n"
+              "fatal: Could not read from remote repository.\n\n"
+              "Please make sure you have the correct access rights\n"
+              "and the repository exists.\n")
+    assert guard._reason(stderr) == "Could not read from remote repository."
 
 
 # ---- check 2: nothing uncommitted ----------------------------------------------------
@@ -369,6 +442,7 @@ def a_run(tmp_path, monkeypatch):
         season=2026, week=4, matched=3, total=3, kickoffs=dict(KICKOFFS)))
     monkeypatch.setattr(run_mod, "fetch_lines", lambda params: {})
     monkeypatch.setattr(run_mod, "fetch_scores", lambda params: {})
+    monkeypatch.setattr(run_mod, "blocked_hosts", lambda urls: [])
     monkeypatch.setattr(run_mod, "datetime", _Frozen)
     return sheet, tmp_path / "logs"
 
@@ -461,3 +535,36 @@ def test_cache_is_still_refused_under_claude_code(a_run, monkeypatch, capsys):
     monkeypatch.setenv("CLAUDECODE", "1")
     assert run_main(log, "--cache") == 3
     assert "--cache" in capsys.readouterr().err
+
+
+# ---- the network: every host the run needs, checked before anything is fetched -------
+
+def test_a_host_the_network_refuses_halts_the_run_and_names_it(a_run, monkeypatch, capsys):
+    """Week 3 from Cowork: the proxy refused the odds API, and the run printed a board
+    with no lines instead of saying the run could not work from there."""
+    _, log = a_run
+    monkeypatch.setattr(run_mod, "blocked_hosts", lambda urls: ["api.the-odds-api.com"])
+    monkeypatch.setattr(run_mod, "fetch_lines", lambda p: pytest.fail("fetched lines"))
+    assert run_main(log) == 3
+    err = capsys.readouterr().err
+    assert "GUARDRAIL, halting" in err
+    assert "add api.the-odds-api.com to this environment's network allowlist" in err
+    assert not list(log.glob("run-*.json"))
+
+
+def test_the_hosts_checked_are_the_hosts_the_run_will_use(a_run, monkeypatch):
+    _, log = a_run
+    seen = []
+    monkeypatch.setattr(run_mod, "blocked_hosts", lambda urls: seen.extend(urls) or [])
+    assert run_mod.main(["--no-injuries", "--log", str(log)]) == 0
+    assert seen == [schedule.SCHEDULE_URL, "https://api.the-odds-api.com/v4",
+                    run_mod.FORECAST_URL]
+
+
+def test_hosts_a_run_will_not_use_are_not_checked(a_run, monkeypatch):
+    _, log = a_run
+    seen = []
+    monkeypatch.setattr(run_mod, "blocked_hosts", lambda urls: seen.extend(urls) or [])
+    assert run_main(log, "--offline-lines", "examples/week1-2026-lines.json",
+                    "--tranche", "all") == 0
+    assert seen == [schedule.SCHEDULE_URL]

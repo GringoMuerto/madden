@@ -19,7 +19,10 @@ TLS verification are all urllib's own, unchanged.
 from __future__ import annotations
 
 import http.client
+import re
+import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 
 class _NoConnectionClose:
@@ -52,3 +55,33 @@ _OPENER = urllib.request.build_opener(_HTTPHandler, _HTTPSHandler)
 def urlopen(url, timeout: float):
     """urllib.request.urlopen without the Connection: close header. url may be a Request."""
     return _OPENER.open(url, timeout=timeout)
+
+
+# http.client's own words when a proxy answers CONNECT with 403: the proxy refused to
+# open the tunnel at all. Cowork's proxy does this for any host off its allowlist.
+_PROXY_REFUSED = re.compile(r"Tunnel connection failed: 403\b")
+
+
+def blocked_hosts(urls, timeout: float = 10) -> list[str]:
+    """Hosts this machine's proxy refuses to connect to, by policy, in the order given.
+
+    Any HTTP answer, 404 or 401 included, means the host was reached. A timeout or a
+    DNS failure is a hiccup, not policy: it is left to the fetch that needs the host,
+    which degrades and warns as before. Only a proxy's refusal comes back, because
+    that fails the same way on every run until the allowlist changes.
+    """
+    blocked: list[str] = []
+    for url in urls:
+        host = urlsplit(url).hostname
+        try:
+            req = urllib.request.Request(url, method="HEAD",
+                                         headers={"User-Agent": "madden/1.0"})
+            _OPENER.open(req, timeout=timeout).close()
+        except urllib.error.HTTPError:
+            pass
+        except urllib.error.URLError as exc:
+            if _PROXY_REFUSED.search(str(exc.reason)) and host not in blocked:
+                blocked.append(host)
+        except OSError:
+            pass
+    return blocked

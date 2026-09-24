@@ -45,12 +45,15 @@ STADIUMS = {
 }
 
 
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+
 def _cache_path(team: str) -> Path:
     return CACHE / f"weather-{team}.json"
 
 
 def _fetch(lat: float, lon: float, timeout: int):
-    url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+    url = (f"{FORECAST_URL}?latitude={lat}&longitude={lon}"
            f"&hourly=temperature_2m,wind_speed_10m&temperature_unit=fahrenheit"
            f"&wind_speed_unit=mph&forecast_days=10&timezone=UTC")
     req = urllib.request.Request(url, headers={"User-Agent": "madden/1.0"})

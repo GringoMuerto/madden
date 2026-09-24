@@ -2,7 +2,7 @@
 type: agent-spec
 status: approved
 created: 2026-09-10
-revised: 2026-09-23
+revised: 2026-09-24
 playbook_version: 2026-08-06
 supersedes: the first madden.md draft written earlier on 2026-09-10, now trashed
 ---
@@ -124,13 +124,21 @@ Scott, 2026-09-23: *"I want to strip Madden down to be a regular agent and have 
 
 **Mandate:** report exactly what the engine produced. When Scott digs into a game, fetch; never reason.
 **Lives at** `plugins/scott-agents/skills/madden/SKILL.md` in `GringoMuerto/claude-skills`.
-**Invoked** as `/madden` by Scott, from a Claude Code session started **anywhere**. `disable-model-invocation: true`: loading the skill runs the engine and spends odds-API credits, so only Scott starts it.
+**Invoked** as `/madden` by Scott, from a Claude Code session started **anywhere**, or from Cowork. `disable-model-invocation: true`: loading the skill runs the engine and spends odds-API credits, so only Scott starts it.
 
 **The engine runs as the skill loads,** before the model reads a word. A load-time command runs `scripts/run_engine.py`, which runs `python3 -m madden.run` in `~/dev/madden` with no flags (so `--tranche auto`), prints the engine's full output and exit code, allows 100 seconds, and always exits 0 so that the engine's refusals reach the model as text. While the skill is active the model holds no shell and no editing tool (`disallowed-tools: Bash Edit Write NotebookEdit`); it reads the output and reports it. `WebFetch` stays for follow-ups. The restriction clears on Scott's next message, so follow-up turns have normal tools, and the engine's own checks below are what stop a follow-up turn producing a board.
 
 **A non-default run** (another tranche, `--sheet-week`, `--expect`, `--week`) is Scott's own: `! cd ~/dev/madden && python3 -m madden.run <flags>`, and the operator reports that output.
 
-**The claude.ai copy** is a separate short file, `skills/madden/claude_ai_upload.md`, packed as the upload's one `SKILL.md`. The engine runs only in Claude Code on Scott's Mac. No engine, no picks.
+**The claude.ai copy** is a separate short file, `skills/madden/claude_ai_upload.md`, packed as the upload's one `SKILL.md`. It runs the engine where it has a shell that reaches the repo (Cowork), and in a claude.ai chat with no shell it produces nothing. No engine, no picks.
+
+**Where the engine runs (changed 2026-09-24).** In Claude Code on Scott's Mac and in Cowork, the same way. Until 2026-09-24 it ran only in Claude Code. Week 3's Thursday run from Cowork showed why it could not run there: Cowork's network proxy refused `api.the-odds-api.com` (403 at the tunnel, `X-Proxy-Error: blocked-by-allowlist`), and check 1 fetched over SSH, for which Cowork has no key. That run printed a board with no lines. Running the same way in both needs:
+
+- **The same hosts reachable from both:** `github.com` and `release-assets.githubusercontent.com` (nflverse, and check 1), `api.the-odds-api.com`, `api.open-meteo.com`. Cowork reaches only hosts on its network allowlist, which is set in Cowork, not in this repo.
+- **The same GitHub access from both:** check 1 fetches over HTTPS, never with the Mac's SSH key or saved logins, which Cowork does not have. While the repo is private it uses `MADDEN_GITHUB_TOKEN` from `.env`, a read-only token for this repo only (Contents: read). A public repo needs no token.
+- **The network check** below, so a host either environment cannot reach stops the run by name instead of producing an empty board.
+
+**Not yet verified in Cowork (2026-09-24).** Three protections have been confirmed only in Claude Code on the Mac: Claude's file tools asking before editing `~/dev/madden` (set in the Mac's `~/.claude/settings.json`); `--cache` refused, which keys on `CLAUDECODE=1`; and the operator skill removing the shell while `/madden` is active. Until a Cowork session confirms each one, the engine's own checks are what stand behind a Cowork board, and these three do not.
 
 | May not | Enforced by |
 |---|---|
@@ -146,10 +154,12 @@ Scott, 2026-09-23: *"I want to strip Madden down to be a regular agent and have 
 
 They run on **every** engine run, from any shell, not only under Claude Code. Each failure prints `GUARDRAIL, halting:` and one plain sentence naming the problem, and exits 3. Code: `madden/guard.py`.
 
-1. **In step with GitHub.** `git fetch origin`, limited to 15 seconds, then `main` against `origin/main`. Refused: the checkout is not on `main`; this Mac is behind (the 2026-09-10 stale-checkout failure); this Mac is ahead; the two have split. **If GitHub cannot be reached,** the engine still compares against the copy of `origin/main` saved at the last successful fetch, and refuses if this Mac holds commits that copy lacks, or if that copy is itself ahead of this Mac. Otherwise it runs, and RUN HEALTH says: *"CODE NOT CHECKED AGAINST GITHUB: the engine could not reach GitHub, so it cannot confirm GitHub has no newer work; last successful check <time>."* A Sunday-morning network hiccup must not cost the board, and it must not be silent either.
-2. **Nothing uncommitted.** `git status --porcelain` must be empty: nothing modified, staged, deleted, or untracked and not ignored. The refusal names the first five paths. Ignored files are exempt: `.env`, `logs/`, `.cache/`, `.codex/`. This covers engine code, `params.yaml`, week and lines files, and a new file dropped beside the engine to shadow a module it imports.
+1. **In step with GitHub.** A fetch of `main` from origin over HTTPS, with `MADDEN_GITHUB_TOKEN` when set and no credential helper, limited to 15 seconds, then `main` against `origin/main`. Refused: the checkout is not on `main`; this Mac is behind (the 2026-09-10 stale-checkout failure); this Mac is ahead; the two have split. **If GitHub cannot be reached,** the engine still compares against the copy of `origin/main` saved at the last successful fetch, and refuses if this Mac holds commits that copy lacks, or if that copy is itself ahead of this Mac. Otherwise it runs, and RUN HEALTH says: *"CODE NOT CHECKED AGAINST GITHUB: the engine could not reach GitHub (<git's fatal: line>), so it cannot confirm GitHub has no newer work; last successful check <time>."* When the token is missing, the reason says `MADDEN_GITHUB_TOKEN is not set in .env`. A Sunday-morning network hiccup must not cost the board, and it must not be silent either.
+2. **Nothing uncommitted.** `git status --porcelain` must be empty: nothing modified, staged, deleted, or untracked and not ignored. The refusal names the first five paths. Ignored files are exempt: `.env`, `.venv/`, `__pycache__/`, `*.pyc`, `logs/`, `.cache/`, `.DS_Store`, `sheets/*.xlsx`, `.codex/`, `.claude/settings.local.json`, `.claude/.cc-writes/`. This covers engine code, `params.yaml`, week and lines files, and a new file dropped beside the engine to shadow a module it imports.
 3. **Input files live in the repo and are committed.** `--params`, `--week` and `--offline-lines` must resolve inside the repo and be tracked by git. A path outside the repo is refused, so check 2 always covers these files. So is an untracked file in an ignored folder, which check 2 cannot see.
 4. **The sheet comes from the pick'em folder.** The sheet, chosen or passed with `--sheet`, must resolve inside `MADDEN_SHEETS_DIR`, following symlinks. An unset `MADDEN_SHEETS_DIR` is a refusal. RUN HEALTH prints `SHEET: <full path>, last changed <local time>`.
+
+**The network check (added 2026-09-24).** After checks 1 to 3 and before anything is fetched, the engine sends a HEAD request to one URL on every host the run will use: the nflverse schedule (which redirects to GitHub's download host), the odds API unless `--offline-lines`, open-meteo unless `--no-weather`. A proxy that refuses the connection (403 at the tunnel) refuses it on every run until its allowlist changes, so the run halts with `GUARDRAIL, halting:` naming each refused host and saying to add it to the environment's network allowlist (exit 3, no log, no odds credit spent: the check sends no key). Any HTTP answer means the host was reached. A timeout or DNS failure is a hiccup, not policy: it is left to the fetch that meets it, which degrades and warns as before. Code: `blocked_hosts` in `madden/net.py`.
 
 **Together:** only code and inputs that are committed **and** on GitHub can produce picks. The one gap is when GitHub cannot be reached, and RUN HEALTH says so on the board.
 
@@ -360,7 +370,7 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 | Unresolved status | Sunday run, meaningful player still questionable on a later-window game | Which player, which way the line moved, the pick either way | Notify | Pick stands |
 | Silence | No run by the tranche deadline | Alert | Notify | Games revert to favorite |
 | Engine change | Claude's `Edit` or `Write` on any file under `~/dev/madden`, from any session | The file and the change | Approve or reject | The write does not happen |
-| Engine check fails | Not on `main`; behind, ahead of or split from GitHub; anything uncommitted; an input file outside the repo or untracked; a sheet outside `MADDEN_SHEETS_DIR`; every tranche kicked off; or `--cache` under Claude Code | The refusal, one plain sentence naming the problem (exit 3) | Halt | No picks |
+| Engine check fails | Not on `main`; behind, ahead of or split from GitHub; anything uncommitted; an input file outside the repo or untracked; a sheet outside `MADDEN_SHEETS_DIR`; a host the run needs refused by the network; every tranche kicked off; or `--cache` under Claude Code | The refusal, one plain sentence naming the problem (exit 3) | Halt | No picks |
 | Code not checked against GitHub | `git fetch` failed or took over 15 seconds, and this Mac holds nothing the saved copy of GitHub lacks | `CODE NOT CHECKED AGAINST GITHUB` with the last successful check time, under run health | Notify | **Picks stand** |
 
 **No cap on handbacks (Scott's decision, overruling a recommended cap of three).** He hands back as many games as he lacks the perspective to pick, each with an explanation and a lean. **Tradeoff recorded:** the trigger gets a defined threshold rather than being left to the model's sense of its own uncertainty, and the weekly handback count is logged. If it averages high, the threshold is miscalibrated and the threshold is what gets fixed.
@@ -447,10 +457,11 @@ The scoreboard is nearly free: every pick resolves within days against unambiguo
 
 ## Runtime
 
-Git-backed local project, run through Claude Code on the MacBook, invoked manually by Scott as `/madden` **from any directory**, or by Scott himself with `! python3 ~/dev/madden/madden/run.py` (see Operator skill; no sandbox since 2026-09-23). Not a scheduled local task pointed at the vault (prohibited by `CLAUDE.md`; **confirm the exact rule there before implementation — not yet done**).
+Git-backed local project, run through Claude Code on the MacBook or through Cowork (see Where the engine runs), invoked manually by Scott as `/madden` **from any directory**, or by Scott himself with `! python3 ~/dev/madden/madden/run.py` (see Operator skill; no sandbox since 2026-09-23). Not a scheduled local task pointed at the vault (prohibited by `CLAUDE.md`; **confirm the exact rule there before implementation — not yet done**).
 
 - Repo: `~/dev/madden`, git-initialised.
 - `ODDS_API_KEY` in `.env`, excluded by `.gitignore`. Never in the vault, never in a repo, never in a conversation, and **never in a copy of the repo** — see Guardrails. **Verified working 2026-09-10** — authenticated call returned `x-requests-last: 1`.
+- `MADDEN_GITHUB_TOKEN` in `.env` while the repo is private: read-only, this repo only, with an expiry date. Same rules as `ODDS_API_KEY`. The engine hands it to git through the environment, never on a command line, where the process list would show it.
 - Tuning parameters in version-controlled config in the same repo.
 
 | Run | When (Central) | Covers | Notes |
@@ -471,7 +482,7 @@ Git-backed local project, run through Claude Code on the MacBook, invoked manual
 | **the-odds-api.com** (hyphens — see warning) | Free, email only | 1 credit/call, ~20/month against 500 | Current consensus spreads, `last_update` timestamps, totals for the tiebreaker |
 | **ESPN unofficial API** | None | Free | **Not an injury source** (changed 2026-09-10). Its injury status is ESPN's own news summary, not the official designation, and official game statuses post Friday. On 2026-09-10 an entry marked `source: basic/manual` listed Michael Penix Jr. "Out" (Knee - ACL) while the official report had him at full participation, and that entry was the only reason ATL at PIT was flagged blind. Its comment attributed the status to the head coach, so it may prove right; that is the point. It is a summary of news, not the designation. Do not move injuries back to ESPN because it is the more convenient endpoint. |
 | **nflverse** (GitHub) | None | Free | Schedules, venue, closing spreads, play-by-play for EPA. **The injury source:** the official league injury report and the daily depth chart, used only for the three display-only sections under the board (names and counts, no points). Rebuilt daily about 12:00 UTC; the build time prints with every run. |
-| **open-meteo.com** | None | Free | Forecast temperature and wind at the stadium for each kickoff: temperature for the 75°F dome-visitor rule, wind for the tiebreaker. Added 2026-09-10, replacing temperatures taken from a sportsbook's weather page. A failed fetch means no temperature, and the rule does not fire. |
+| **open-meteo.com** | None | Free | Forecast temperature and wind at the stadium for each kickoff, with kickoff times from the nflverse schedule (from 2026-09-24; before that from the odds feed, so a failed line fetch also meant no forecast): temperature for the 75°F dome-visitor rule, wind for the tiebreaker. Added 2026-09-10, replacing temperatures taken from a sportsbook's weather page. A failed fetch means no temperature, and the rule does not fire. |
 
 ⚠️ **The vendor publishes an impersonator warning about itself.** The real domain is **the-odds-api.com** (hyphens). An unaffiliated site at **theoddsapi.com** (no hyphens, registered 2024) resells their data without authorisation. A third similarly-named business, odds-api.io, is a separate company and was accidentally cited during design.
 

@@ -36,8 +36,9 @@ from . import health
 from . import injuries
 from . import schedule
 from .market import fetch_lines, fetch_scores, load_offline, soonest
+from .net import blocked_hosts
 from .sheet import SheetFault, parse_sheet
-from .weather import forecast_many
+from .weather import FORECAST_URL, forecast_many
 
 TRANCHES = {
     "thursday": ("Wednesday", "Thursday"),
@@ -370,6 +371,24 @@ def forecast_needs(in_tranche, temps, kickoffs) -> tuple[list, list[str]]:
     return need, warnings
 
 
+def needed_urls(args, params) -> list[str]:
+    """One URL on every host this run will fetch from. The schedule URL redirects to
+    GitHub's download host, so checking it covers both github.com and that host."""
+    urls = [schedule.SCHEDULE_URL]
+    if not args.offline_lines:
+        urls.append(params["odds_api"]["base_url"])
+    if not args.no_weather:
+        urls.append(FORECAST_URL)
+    return urls
+
+
+def network_refusal(blocked: list[str]) -> str:
+    hosts = " and ".join(blocked)
+    return (f"this machine's network refuses to connect to {hosts}, so the engine cannot "
+            f"fetch what it needs from there; add {hosts} to this environment's network "
+            f"allowlist")
+
+
 def already_started(in_tranche, kickoffs, now) -> list[str]:
     """Games in THIS run that have already kicked off.
 
@@ -442,6 +461,14 @@ def main(argv=None) -> int:
         return 3
 
     params = load_yaml(args.params)
+    # Every host this run needs, before anything is fetched. A proxy that refuses one
+    # refuses it on every run, so the run stops and names it rather than printing a
+    # board with no lines, as week 3 did from Cowork. A hiccup is not a refusal: those
+    # still degrade and warn at the fetch that meets them.
+    blocked = blocked_hosts(needed_urls(args, params))
+    if blocked:
+        print(f"GUARDRAIL, halting: {network_refusal(blocked)}", file=sys.stderr)
+        return 3
     week = load_yaml(args.week) if args.week else {}
     temps = dict(week.get("temperatures", {}) or {})
     winds = dict(week.get("wind_mph", {}) or {})

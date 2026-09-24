@@ -8,7 +8,9 @@ committed code and inputs. They ask that question of git, which answers it direc
 instead of asking a sandbox that might not be there.
 
 1. In step with GitHub. On main, and neither behind, ahead of, nor split from
-   origin/main after a fresh fetch. When GitHub cannot be reached, the run is still
+   origin/main after a fresh fetch. The fetch goes over HTTPS with the read-only
+   MADDEN_GITHUB_TOKEN from .env, never this machine's SSH key or saved logins, so it
+   works the same from Claude Code on the Mac and from Cowork, which has no SSH key. When GitHub cannot be reached, the run is still
    refused if this Mac holds commits the last downloaded copy lacks; otherwise it
    warns, and run health says the code was not checked against GitHub.
 2. Nothing uncommitted. `git status --porcelain` must be empty. Ignored files are
@@ -26,7 +28,9 @@ exits 3.
 
 from __future__ import annotations
 
+import base64
 import os
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -40,10 +44,12 @@ class Refusal(Exception):
     """A check failed. The message is the one sentence the engine prints."""
 
 
-def _git(repo: Path, *args, timeout: float | None = None) -> subprocess.CompletedProcess:
+def _git(repo: Path, *args, timeout: float | None = None,
+         env: dict | None = None) -> subprocess.CompletedProcess:
     # No optional locks: plain `git status` refreshes the index under index.lock, and a
     # run killed partway would leave that lock behind to block every later git command.
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C", GIT_OPTIONAL_LOCKS="0")
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C", GIT_OPTIONAL_LOCKS="0",
+               **(env or {}))
     return subprocess.run(["git", "--no-optional-locks", "-C", str(repo), *args],
                           capture_output=True,
                           text=True, timeout=timeout, env=env)
@@ -56,6 +62,49 @@ def _out(repo: Path, *args) -> str:
                       f"({(r.stderr or r.stdout).strip() or 'no output'}), so the engine "
                       f"cannot confirm what code it is running")
     return r.stdout.strip()
+
+
+GITHUB_REMOTE = re.compile(r"^(?:git@github\.com:|ssh://git@github\.com/|"
+                           r"https://github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$")
+TOKEN_VAR = "MADDEN_GITHUB_TOKEN"
+
+
+def fetch_url(repo: Path) -> str:
+    """Where check 1 fetches from: origin, as HTTPS when origin is on GitHub.
+
+    origin is git@github.com:..., which needs an SSH key. Cowork has none, so check 1
+    failed there on every run. HTTPS with a token works from both.
+    """
+    origin = _out(repo, "remote", "get-url", "origin")
+    m = GITHUB_REMOTE.match(origin)
+    return f"https://github.com/{m.group(1)}.git" if m else origin
+
+
+def _auth_env() -> dict:
+    """git config, through the environment, that sends MADDEN_GITHUB_TOKEN to GitHub
+    and nothing else: no credential helper, so the Mac's keychain cannot make a check
+    pass here that would fail in Cowork. The environment keeps the token out of the
+    process list, where a command-line argument would show it."""
+    config = [("credential.helper", "")]
+    token = os.environ.get(TOKEN_VAR, "").strip()
+    if token:
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        config.append(("http.https://github.com/.extraheader",
+                       f"Authorization: Basic {basic}"))
+    env = {"GIT_CONFIG_COUNT": str(len(config))}
+    for i, (key, value) in enumerate(config):
+        env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    return env
+
+
+def _reason(stderr: str) -> str:
+    """git's own statement of what failed: the fatal: line, not whatever came last.
+    Week 3's warning quoted "and the repository exists.", the tail of a longer message."""
+    lines = [ln.strip() for ln in stderr.strip().splitlines() if ln.strip()]
+    for ln in lines:
+        if ln.startswith("fatal:"):
+            return ln[len("fatal:"):].strip()
+    return lines[-1] if lines else "no reason given"
 
 
 def local_time(ts: float) -> str:
@@ -84,8 +133,13 @@ def in_step_with_github(repo: Path = REPO, timeout: float = FETCH_TIMEOUT) -> st
                       f"the picks from the code on GitHub's main branch")
 
     try:
-        r = _git(repo, "fetch", "--quiet", "origin", timeout=timeout)
-        reached, why = r.returncode == 0, (r.stderr.strip().splitlines() or ["no reason"])[-1]
+        url = fetch_url(repo)
+        r = _git(repo, "fetch", "--quiet", url, "+refs/heads/main:refs/remotes/origin/main",
+                 timeout=timeout, env=_auth_env())
+        reached, why = r.returncode == 0, _reason(r.stderr)
+        if not reached and url.startswith("https://github.com/") \
+                and not os.environ.get(TOKEN_VAR, "").strip():
+            why += f"; {TOKEN_VAR} is not set in .env"
     except subprocess.TimeoutExpired:
         reached, why = False, f"no answer within {timeout:g} seconds"
 

@@ -21,7 +21,8 @@ pip install -r requirements.txt               # once
 python3 ~/dev/madden/madden/run.py            # from any directory
 ```
 
-That is the whole command. `.env` (`ODDS_API_KEY`, `MADDEN_SHEETS_DIR`) is read from the repo
+That is the whole command. `.env` (`ODDS_API_KEY`, `MADDEN_SHEETS_DIR`, and
+`MADDEN_GITHUB_TOKEN` while the repo is private) is read from the repo
 automatically. The tranche is chosen for you: `--tranche auto`, the default, runs the
 earliest tranche whose first kickoff is still ahead, and run health says which one and why.
 If every tranche has already kicked off it refuses. `--tranche thursday|international|
@@ -38,12 +39,15 @@ path form above.
 
 The engine refuses to run, exit 3, with one plain sentence saying why, unless all four hold:
 
-1. **It matches GitHub.** It fetches from GitHub (15 seconds at most) and refuses if this
-   Mac is not on `main`, is behind GitHub, is ahead of it, or has split from it. If GitHub
+1. **It matches GitHub.** It fetches from GitHub over HTTPS (15 seconds at most), with
+   `MADDEN_GITHUB_TOKEN` from `.env` when the repo is private, never an SSH key or a saved
+   login, so it works the same from Claude Code and from Cowork. It refuses if this
+   checkout is not on `main`, is behind GitHub, is ahead of it, or has split from it. If GitHub
    can't be reached, it still refuses when this Mac has commits GitHub's last-known copy
    lacks. Otherwise it runs and says `CODE NOT CHECKED AGAINST GITHUB` in run health.
 2. **Nothing is uncommitted.** Any changed, staged or new file refuses, and the first few
-   are named. Files git ignores (`.env`, `logs/`, `.cache/`, `.codex/`) don't count.
+   are named. Files git ignores (`.env`, `logs/`, `.cache/`, `.codex/`, Claude Code's
+   per-machine files, and the rest of `.gitignore`) don't count.
 3. **Settings, week and lines files are committed in this repo.** A `--params`, `--week` or
    `--offline-lines` file from outside the repo, or not committed, refuses.
 4. **The sheet is from the pick'em folder.** It must be inside `MADDEN_SHEETS_DIR`. Run
@@ -52,6 +56,17 @@ The engine refuses to run, exit 3, with one plain sentence saying why, unless al
 
 So after any change: commit and push, then run. `--cache` is also refused under Claude
 Code, because cached forecasts are not a submittable board.
+
+**Then the network.** Before fetching anything it checks every host the run will use:
+`github.com` and `release-assets.githubusercontent.com` (nflverse), `api.the-odds-api.com`
+unless `--offline-lines`, `api.open-meteo.com` unless `--no-weather`. A host the network's
+proxy refuses stops the run, exit 3, naming the host to add to that environment's
+allowlist. This is what a Cowork run without the allowlist entries hits. A timeout is not a
+refusal: that fetch degrades and warns as before.
+
+**Claude Code and Cowork run it the same way** once both hold: the hosts above reachable
+(Cowork's allowlist is set in Cowork), and GitHub reachable over HTTPS, which for a private
+repo means `MADDEN_GITHUB_TOKEN` in `.env`, a read-only token for this repo only.
 
 `--week examples/week1-2026.yaml` is optional: neutral sites, blind flags and manual
 overrides. It may also declare `season:` and `week:`, which overrides the schedule lookup —
@@ -186,8 +201,9 @@ erases the thing being corrected.
 - Never fabricate a missing line. Missing stays missing and the game gets flagged.
 - Degrade and warn on a data fault. Halt only on a sheet fault.
 - Madden never submits, never contacts, never publishes.
-- `ODDS_API_KEY` lives in `.env`, which `.gitignore` excludes. Never in the vault, never in
-  a repo, never in a conversation.
+- `ODDS_API_KEY` and `MADDEN_GITHUB_TOKEN` live in `.env`, which `.gitignore` excludes.
+  Never in the vault, never in a repo, never in a conversation. The engine sends the token
+  to git through the environment, never on a command line, where the process list shows it.
 - **No copy of the repo carries `.env`.** A recursive copy takes the key with it and lands it
   somewhere nothing protects. Use `tar --exclude=.env`, or copy the files you need rather
   than the tree, then `find <dir> -name '.env*'` before you leave the copy behind. Seven
