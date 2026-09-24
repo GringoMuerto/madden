@@ -351,14 +351,14 @@ def missed_tranches(deadlines, runs, now) -> list[str]:
         if mine:
             latest = max(mine).strftime("%Y-%m-%d %H:%M UTC")
             out.append(
-                f"MISSED TRANCHE: the {name} tranche kicked off {when} and the only run "
-                f"covering it was written {latest}, after the deadline. Those picks were "
+                f"MISSED GAMES: the {name} game(s) kicked off {when} and the only run "
+                f"covering them was written {latest}, after kickoff. Those picks were "
                 f"made against games already under way. {len(listed)} game(s): "
                 f"{', '.join(listed)}")
         else:
             out.append(
-                f"MISSED TRANCHE: the {name} tranche kicked off {when} and no run covers "
-                f"it. Under the pool's rule those games reverted to the favorite. "
+                f"MISSED GAMES: the {name} game(s) kicked off {when} and no run priced "
+                f"them before kickoff. Under the pool's rule they reverted to the favorite. "
                 f"{len(listed)} game(s): {', '.join(listed)}")
     return out
 

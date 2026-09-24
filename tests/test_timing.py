@@ -74,7 +74,7 @@ def test_a_tranche_that_never_ran_is_reported_with_the_revert_named():
     # After the thursday deadline, before the sunday one, so only one tranche is due.
     out = missed_tranches(d, [], now=utc("2026-09-12 12:00"))
     assert len(out) == 1 and "thursday" in out[0]
-    assert "no run covers it" in out[0]
+    assert "no run priced them before kickoff" in out[0]
     assert "reverted to the favorite" in out[0]
 
 
@@ -111,7 +111,7 @@ def test_a_run_written_after_the_deadline_does_not_cover_it():
     runs = [("thursday", utc("2026-09-11 03:03"))]          # the real run stamp
     out = missed_tranches(d, runs, now=utc("2026-09-12 12:00"))
     assert len(out) == 1
-    assert "after the deadline" in out[0]
+    assert "after kickoff" in out[0]
     assert "already under way" in out[0]
 
 
