@@ -413,7 +413,7 @@ Madden sends nothing, spends nothing, publishes nothing, deletes nothing. Conven
 - Degrade and warn, never stop, on data faults. Halt only on sheet fault.
 - Madden never submits, never contacts, never publishes.
 - **No copy of the repo carries `.env`.** A recursive copy of Madden's folder takes `ODDS_API_KEY` with it — `tar`, `cp -r` and `rsync` all do — and a copy in a scratch directory is outside everything that protects the original: `.gitignore` does not reach it, no permission rule stops a copy being made, and nothing sweeps it afterwards. **Seven such copies were found on 2026-09-11**, in `$TMPDIR`, the oldest over an hour old, spanning at least four sessions and two of them made that evening while fixing a different defect. The habit that prevents it: `tar --exclude=.env`, or copy the files you need rather than the tree, then `find <dir> -name '.env*'` before leaving the copy behind. This is its own rule because the one below, about where the key lives, is silent about copies and was read as covering them.
-- Operator enforcement: see Architecture decision → Operator skill and The engine's four checks.
+- Operator enforcement: see Architecture decision → Operator skill and The engine's checks.
 
 ---
 
