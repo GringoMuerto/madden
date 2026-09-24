@@ -134,3 +134,34 @@ def test_logged_runs_survives_a_log_with_no_stamp(tmp_path):
     (tmp_path / "run-20260909T140000Z-thursday.json").write_text(json.dumps(
         {"tranche": "thursday", "season": 2026, "week": 1}))
     assert logged_runs(tmp_path, 2026, 1) == []
+
+
+# ---- forecasts: kickoff times come from the schedule ------------------------------
+
+from madden.run import forecast_needs
+
+GB_ATL = kickoff_at("2026-09-24", "20:15")        # week 3, Thursday night
+
+
+def test_a_forecast_uses_the_schedule_kickoff():
+    """Week 3: the odds fetch failed, and ATL at GB went without a forecast."""
+    atl_gb = game("GB", "ATL", "GB", "Thursday")
+    need, warnings = forecast_needs([atl_gb], {}, {frozenset(("GB", "ATL")): GB_ATL})
+    assert need == [("GB", GB_ATL)]
+    assert warnings == []
+
+
+def test_a_game_missing_from_the_schedule_says_so():
+    atl_gb = game("GB", "ATL", "GB", "Thursday")
+    need, warnings = forecast_needs([atl_gb], {}, {})
+    assert need == []
+    assert len(warnings) == 1 and "ATL at GB" in warnings[0]
+
+
+def test_a_supplied_temperature_or_neutral_site_needs_no_forecast():
+    atl_gb = game("GB", "ATL", "GB", "Thursday")
+    london = Game(favorite="MIN", underdog="CLE", spread=3.0, day="Sunday",
+                  nominal_home="CLE", row=0, neutral_site=True)
+    kickoffs = {frozenset(("GB", "ATL")): GB_ATL, frozenset(("CLE", "MIN")): GB_ATL}
+    need, warnings = forecast_needs([atl_gb, london], {"GB": 58.0}, kickoffs)
+    assert need == [] and warnings == []

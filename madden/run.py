@@ -349,6 +349,27 @@ def missed_tranches(deadlines, runs, now) -> list[str]:
     return out
 
 
+def forecast_needs(in_tranche, temps, kickoffs) -> tuple[list, list[str]]:
+    """(home, kickoff) for every outdoor game still needing a forecast, plus warnings.
+
+    The kickoff comes from the nflverse schedule, the engine's one source of kickoff
+    times; tranche deadlines already use it. It used to come from the odds feed, so
+    when week 3's line fetch failed ATL at GB was never forecast and the dome rule
+    went unevaluated, though the schedule knew exactly when the game started.
+    """
+    need, warnings = [], []
+    for g in in_tranche:
+        if g.home in temps or g.neutral_site:
+            continue
+        kickoff = kickoffs.get(frozenset((g.home, g.away)))
+        if kickoff is None:
+            warnings.append(f"no kickoff time for {g.away} at {g.home} in the schedule, so "
+                            f"no forecast was fetched; the temperature rule cannot fire")
+            continue
+        need.append((g.home, kickoff))
+    return need, warnings
+
+
 def already_started(in_tranche, kickoffs, now) -> list[str]:
     """Games in THIS run that have already kicked off.
 
@@ -544,14 +565,8 @@ def main(argv=None) -> int:
     if args.no_weather:
         warnings.append("forecast skipped by --no-weather: temperature rules cannot fire")
     else:
-        need = []
-        for g in in_tranche:
-            if g.home in temps or g.neutral_site:
-                continue
-            ml, _ = soonest(lines, g.home, g.away)
-            kickoff = ml.starts_at() if ml else None
-            if kickoff is not None:
-                need.append((g.home, kickoff))
+        need, no_kickoff = forecast_needs(in_tranche, temps, resolved.kickoffs)
+        warnings.extend(no_kickoff)
         if need:
             print(f"fetching forecasts for {len(need)} stadiums...", flush=True)
             got_t, got_w, w_warn = forecast_many(need, use_cache=args.cache)
