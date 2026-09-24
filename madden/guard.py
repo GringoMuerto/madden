@@ -12,7 +12,8 @@ instead of asking a sandbox that might not be there.
    refused if this Mac holds commits the last downloaded copy lacks; otherwise it
    warns, and run health says the code was not checked against GitHub.
 2. Nothing uncommitted. `git status --porcelain` must be empty. Ignored files are
-   exempt: .env, logs/, .cache/, .codex/.
+   exempt: .env, .venv/, __pycache__/, *.pyc, logs/, .cache/, .DS_Store,
+   sheets/*.xlsx, .codex/, .claude/settings.local.json, .claude/.cc-writes/.
 3. Every input file the run reads from the repo (--params, --week, --offline-lines)
    lives inside the repo and is tracked, so check 2 covers it.
 4. The sheet sits in the pick'em folder, MADDEN_SHEETS_DIR. It is the one input nobody
