@@ -28,9 +28,10 @@ import csv
 import io
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .schedule import SCHEDULE_URL, _http
+from .schedule import SCHEDULE_URL, _http, kickoff_at
 from .teams import from_nflverse
 
 
@@ -40,6 +41,16 @@ class GradeFault(Exception):
 
 def load_results(get=None) -> dict:
     """(season, week, away, home) -> (away_score, home_score). Regular season only."""
+    return load_schedule(get)[0]
+
+
+def load_schedule(get=None) -> tuple[dict, dict]:
+    """(final scores, kickoffs), both keyed (season, week, away, home). Regular season.
+
+    Kickoffs are for grading by how long before kickoff each pick was made: since
+    2026-09-24 every run prices every open game, so a game may be priced days out or
+    the morning of, and the spec asks whether the later pick grades better.
+    """
     get = get or _http
     try:
         text = get(SCHEDULE_URL).decode("utf-8")
@@ -49,6 +60,7 @@ def load_results(get=None) -> dict:
             f"grade against ({type(exc).__name__}: {exc}).") from exc
 
     out: dict = {}
+    kickoffs: dict = {}
     for r in csv.DictReader(io.StringIO(text)):
         if (r.get("game_type") or "REG") != "REG":
             continue
@@ -57,6 +69,9 @@ def load_results(get=None) -> dict:
         except (KeyError, TypeError, ValueError):
             continue
         away, home = from_nflverse(r.get("away_team", "")), from_nflverse(r.get("home_team", ""))
+        when = kickoff_at(r.get("gameday", ""), r.get("gametime", ""))
+        if when is not None:
+            kickoffs[(season, week, away, home)] = when
         a, h = (r.get("away_score") or "").strip(), (r.get("home_score") or "").strip()
         if not a or not h:
             continue                                    # not played yet; skipped, not zero
@@ -64,7 +79,29 @@ def load_results(get=None) -> dict:
             out[(season, week, away, home)] = (int(float(a)), int(float(h)))
         except ValueError:
             continue
-    return out
+    return out, kickoffs
+
+
+# How long before kickoff a game was priced. Three bands, chosen so a Wednesday run, a
+# Friday or Saturday run, and a game-day run each land in their own.
+LEAD_BANDS = (("under 24 hours", 0, 24), ("1 to 3 days", 24, 72), ("3 days or more", 72, None))
+
+
+def lead_band(hours: float | None) -> str | None:
+    if hours is None:
+        return None
+    for name, lo, hi in LEAD_BANDS:
+        if hours >= lo and (hi is None or hours < hi):
+            return name
+    return None
+
+
+def run_time(log) -> datetime | None:
+    try:
+        return datetime.strptime(str(log.get("run")), "%Y%m%dT%H%M%SZ").replace(
+            tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 def resolve_week(log, results) -> tuple[int, int]:
@@ -98,10 +135,11 @@ def resolve_week(log, results) -> tuple[int, int]:
     return hits[0]
 
 
-def grade_log(log, results, season=None, week=None) -> dict:
+def grade_log(log, results, season=None, week=None, kickoffs=None) -> dict:
     """Join a run log to final scores. Returns rows plus the records."""
     if season is None or week is None:
         season, week = resolve_week(log, results)
+    ran = run_time(log)
 
     rows, ungraded = [], []
     for p in log.get("picks", []):
@@ -123,6 +161,9 @@ def grade_log(log, results, season=None, week=None) -> dict:
             continue
         covered = home if margin > shl else away
 
+        kick = (kickoffs or {}).get((season, week, away, home))
+        hours = (kick - ran).total_seconds() / 3600 if kick and ran else None
+
         pick = p.get("pick")
         reverted = pick is None
         submitted = favorite if reverted else pick
@@ -137,6 +178,7 @@ def grade_log(log, results, season=None, week=None) -> dict:
             "pick_hit": (None if reverted else pick == covered),
             "submitted_hit": submitted == covered,
             "favorite_hit": favorite == covered,
+            "hours_before": hours, "lead": lead_band(hours),
         })
 
     made = [r for r in rows if not r["reverted"]]
@@ -145,6 +187,13 @@ def grade_log(log, results, season=None, week=None) -> dict:
     for r in made:
         w, n = bands.get(r["band"], (0, 0))
         bands[r["band"]] = (w + bool(r["pick_hit"]), n + 1)
+
+    leads: dict = {}
+    for r in made:
+        if r["lead"] is None:
+            continue
+        w, n = leads.get(r["lead"], (0, 0))
+        leads[r["lead"]] = (w + bool(r["pick_hit"]), n + 1)
 
     # The market side relative to the sheet: the spec's third baseline, and the engine's
     # primary input stripped of all computation. A game with no drift has no market side
@@ -166,7 +215,7 @@ def grade_log(log, results, season=None, week=None) -> dict:
         "submitted": (sum(r["submitted_hit"] for r in rows), len(rows)),
         "favorite": (sum(r["favorite_hit"] for r in rows), len(rows)),
         "deviations": (sum(bool(r["pick_hit"]) for r in deviations), len(deviations)),
-        "bands": bands,
+        "bands": bands, "leads": leads,
         "market_side": (mkt_w, mkt_n),
         "reverts": [r for r in rows if r["reverted"]],
     }
@@ -213,6 +262,13 @@ def report(g) -> list[str]:
         if band not in ("high", "medium", "coin flip", "blind"):
             out.append(f"  {band:<12}{record(pair)}")
 
+    if g.get("leads"):
+        out += ["", "BY TIME BEFORE KICKOFF  (picks made only; one run, so this compares its "
+                    "early and late games)"]
+        for name, _, _ in LEAD_BANDS:
+            if name in g["leads"]:
+                out.append(f"  {name:<16}{record(g['leads'][name])}")
+
     if g["ungraded"]:
         out += ["", "NOT GRADED"]
         out += [f"  ! {u}" for u in g["ungraded"]]
@@ -233,8 +289,9 @@ def main(argv=None) -> int:
         return 2
 
     try:
-        results = load_results()
-        graded = grade_log(log, results, season=args.season, week=args.week)
+        results, kickoffs = load_schedule()
+        graded = grade_log(log, results, season=args.season, week=args.week,
+                           kickoffs=kickoffs)
     except GradeFault as exc:
         print(f"GRADE FAULT: {exc}", file=sys.stderr)
         return 2

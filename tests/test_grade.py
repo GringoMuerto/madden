@@ -117,3 +117,48 @@ def test_a_log_with_no_week_is_resolved_from_its_pairings():
 def test_a_log_whose_games_match_nothing_refuses_to_guess():
     with pytest.raises(GradeFault):
         resolve_week({"picks": [{"game": "SF@LAR"}]}, {})
+
+
+# ---- by time before kickoff: every run prices every open game (2026-09-24) -------------
+
+from datetime import datetime, timezone
+
+from madden.grade import lead_band, report
+
+
+def utc(text):
+    return datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+
+
+def test_each_pick_is_grouped_by_how_long_before_its_kickoff_it_was_priced():
+    """A Wednesday run prices Thursday night one day out and Sunday four days out."""
+    run = {"run": "20260923T140000Z", "tranche": "remaining", "season": 2026, "week": 3,
+           "picks": [pick("ATL@GB", 6.5, "ATL"), pick("CLE@JAX", 7.5, "JAX"),
+                     pick("DEN@KC", 3.5, "KC")]}
+    results = {(2026, 3, "ATL", "GB"): (20, 21),      # ATL +6.5 covers
+               (2026, 3, "CLE", "JAX"): (10, 34),     # JAX -7.5 covers
+               (2026, 3, "DEN", "KC"): (24, 20)}      # DEN covers; KC loses
+    kickoffs = {(2026, 3, "ATL", "GB"): utc("2026-09-24 00:15"),    # 10 hours out
+                (2026, 3, "CLE", "JAX"): utc("2026-09-27 17:00"),   # 3 days 3 hours
+                (2026, 3, "DEN", "KC"): utc("2026-09-25 14:00")}    # 2 days
+    g = grade_log(run, results, kickoffs=kickoffs)
+    assert g["leads"] == {"under 24 hours": (1, 1), "3 days or more": (1, 1),
+                          "1 to 3 days": (0, 1)}
+    text = "\n".join(report(g))
+    assert "BY TIME BEFORE KICKOFF" in text and "under 24 hours" in text
+
+
+def test_no_kickoffs_or_no_run_time_means_no_grouping_rather_than_a_guess():
+    run = {"run": "TEST", "tranche": "sunday", "season": 2026, "week": 1,
+           "picks": [pick("CLE@JAX", 7.5, "JAX")]}
+    g = grade_log(run, {(2026, 1, "CLE", "JAX"): (10, 34)},
+                  kickoffs={(2026, 1, "CLE", "JAX"): utc("2026-09-13 17:00")})
+    assert g["leads"] == {}
+    assert "BY TIME BEFORE KICKOFF" not in "\n".join(report(g))
+
+
+@pytest.mark.parametrize("hours,band", [(0, "under 24 hours"), (23.9, "under 24 hours"),
+                                        (24, "1 to 3 days"), (71.9, "1 to 3 days"),
+                                        (72, "3 days or more"), (None, None)])
+def test_lead_band_edges(hours, band):
+    assert lead_band(hours) == band
